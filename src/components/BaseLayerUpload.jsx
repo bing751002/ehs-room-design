@@ -53,6 +53,19 @@ export default function BaseLayerUpload() {
       // 換新檔案前先刪掉舊的(節省 storage)
       if (baseLayer) await deleteBaseLayer(baseLayer)
       const layer = await uploadBaseLayer(file, planId)
+      // 自動設定 placement: 居中填滿可用區的 90% (與 SVG viewBox 同座標系,單位 cm)
+      const plan = usePlanStore.getState().plan
+      const bounds = plan.bounds || { w: 4000, h: 3000 }
+      const W = layer.width || 1000, H = layer.height || 1000
+      const fit = Math.min((bounds.w * 0.9) / W, (bounds.h * 0.9) / H)
+      const drawW = W * fit, drawH = H * fit
+      layer.placement = {
+        offsetX: (bounds.w - drawW) / 2,
+        offsetY: (bounds.h - drawH) / 2,
+        drawW, drawH,
+        rotation: 0,
+        opacity: 0.6
+      }
       setBaseLayer(layer)
     } catch (ex) {
       console.error(ex)

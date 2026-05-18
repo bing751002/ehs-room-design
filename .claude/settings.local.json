@@ -1,7 +1,11 @@
 {
   "permissions": {
     "allow": [
-      "mcp__Claude_in_Chrome__computer"
+      "mcp__Claude_in_Chrome__computer",
+      "Bash(curl -sS -o /dev/null -w \"HTTP %{http_code}\\\\n\" http://localhost:5173/)",
+      "Bash(curl -sS -o /dev/null -w \"Canvas2D %{http_code}\\\\n\" http://localhost:5173/src/components/Canvas2D.jsx)",
+      "Bash(curl -sS -o /dev/null -w \"BaseLayerControls %{http_code}\\\\n\" http://localhost:5173/src/components/BaseLayerControls.jsx)",
+      "Bash(curl -sS -o /dev/null -w \"SpacePolygon %{http_code}\\\\n\" http://localhost:5173/src/components/canvas/SpacePolygon.jsx)"
     ]
   }
 }

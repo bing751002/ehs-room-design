@@ -12,6 +12,7 @@ const TOOLS = [
   { mode: 'add-door',   icon: '⛌',  label: '門',   shortcut: 'D' },
   { mode: 'add-window', icon: '⊞',  label: '窗',   shortcut: 'N' },
   { mode: 'add-space',  icon: '▭',  label: '空間', shortcut: 'R' },
+  { mode: 'add-column', icon: '▪',  label: '柱',   shortcut: 'C' },
   { mode: 'measure',    icon: '📏', label: '量距', shortcut: 'M' }
 ]
 

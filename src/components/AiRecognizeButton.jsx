@@ -34,14 +34,19 @@ export default function AiRecognizeButton() {
       if (!ok) return
     }
     const msg = [
-      'AI 會看底圖自動辨識牆/門/窗/空間,然後覆蓋目前畫布上所有牆/門/窗/空間。',
+      'AI 會看底圖辨識牆/門/窗/空間,並覆蓋目前畫布。',
       '',
-      '⚠ AI 識別精度不一定 100% 準,出來的結果通常需要手動微調。',
-      '建議用法:當作起點,再用滑鼠拖空間/頂點調整。',
+      '⚠ 注意:',
+      '• 結構柱識別常常不準,如果你已經有手動加柱建議按取消',
+      '• 出來的結果通常需要手動微調',
+      '• 建議當作「起點」,用滑鼠拖空間/頂點再調整',
       '',
       '繼續?'
     ].join('\n')
     if (!confirm(msg)) return
+    // 詢問要不要保留現有柱子 (避免重覆/手動加好的被覆蓋)
+    const keepColumns = (plan.structuralColumns?.length || 0) > 0
+      && confirm(`畫布上已經有 ${plan.structuralColumns.length} 根柱子。\n\n[確定] 保留現有柱子,AI 不要動柱子\n[取消] 用 AI 辨識的柱子取代`)
     setBusy(true); setErr('')
     try {
       const result = await recognizePlanFromImage({
@@ -66,7 +71,14 @@ export default function AiRecognizeButton() {
       const spaces = (result.spaces || []).map(s => ({
         id: newSpaceId(), height: 280, color: '#e2e8f0', wallKind: 'interior', wallThickness: 12, ...s
       }))
-      const structuralColumns = result.structuralColumns || plan.structuralColumns
+      // 柱子處理:保留現有柱子的選項 + 硬上限 25 根
+      const COL_HARD_LIMIT = 25
+      let structuralColumns
+      if (keepColumns) {
+        structuralColumns = plan.structuralColumns || []
+      } else {
+        structuralColumns = (result.structuralColumns || []).slice(0, COL_HARD_LIMIT)
+      }
 
       setPlan({
         ...plan, walls, doors, windows, spaces, structuralColumns,

@@ -17,23 +17,24 @@ export default function SpacePolygon({ space, selected, onSelect }) {
   const isMultiSelected = selectedIds.includes(space.id)
 
   const plan = usePlanStore.getState().plan
-  const zoom = usePlanStore(s => s.canvasZoom) || 0.15
   const center = polygonCenter(vertices)
   const real = polygonRealArea(vertices, plan)
   const areaM2 = real.m2
   const ping = real.ping
   const pointsStr = vertices.map(v => `${v.x},${v.y}`).join(' ')
-  // 字體跟著縮放 (svg 縮放越小,字體相對放大),保持螢幕視覺一致
-  const fontMain = Math.min(120, Math.max(28, 14 / zoom))
-  const fontSub  = Math.min(80,  Math.max(20, 9 / zoom))
-  // 手柄大小也跟著縮放 (螢幕上始終 ~12px)
-  const handleR = Math.min(28, Math.max(10, 8 / zoom))
-  const handleStrokeW = Math.max(2, 2 / zoom)
-  // bounding box for resize 手柄
+  // 字體與手柄都用「相對空間大小」決定,讓畫布縮放時跟著一起變
+  // 計算這個空間的「最短邊」當基準
   const xs = vertices.map(v => v.x), ys = vertices.map(v => v.y)
   const minX = Math.min(...xs), maxX = Math.max(...xs)
   const minY = Math.min(...ys), maxY = Math.max(...ys)
   const bbW = maxX - minX, bbH = maxY - minY
+  const minSide = Math.min(bbW, bbH)
+  // 字體 = 短邊的 12-15%,有上下限保證可讀
+  const fontMain = Math.max(20, Math.min(minSide * 0.13, 90))
+  const fontSub  = Math.max(14, Math.min(minSide * 0.08, 60))
+  // 手柄 = 短邊 4%,有上下限
+  const handleR = Math.max(8, Math.min(minSide * 0.04, 24))
+  const handleStrokeW = Math.max(2, handleR * 0.18)
 
   // 拖拉整個空間 (點空間內部任何位置)
   function dragWhole(e) {

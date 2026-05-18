@@ -4,51 +4,91 @@ import ScaleCalibrator from './ScaleCalibrator.jsx'
 import AiRecognizeButton from './AiRecognizeButton.jsx'
 
 /**
- * 底圖編輯控制條 — 出現在畫布上方
- *  - 位置:上下左右移動 (按一次移 50cm,Shift+按 移 500cm)
- *  - 縮放:− / + (5% 一次,Shift 25% 一次)
- *  - 旋轉:左/右 90° / 重設
- *  - 多頁 PDF:頁面切換
- *  - 重置:把 transform 歸零
+ * 底圖編輯控制條 — 仿 v3_8:
+ *   底圖 placement 用 4 個 cm 值 (offsetX, offsetY, drawW, drawH) + rotation + opacity
+ *   直接跟 SVG viewBox 同座標系,所以畫布縮放時底圖跟所有元素一起變
+ *
+ * - 數字直接輸入 (cm 單位,跟著比例尺校準算成 m)
+ * - 4 方向微調 (按一次 100cm,Shift = 1000cm)
+ * - 等比縮放 / 旋轉 90° / 透明度滑桿
+ * - 多頁 PDF 切換
  */
 export default function BaseLayerControls() {
   const baseLayer = usePlanStore(s => s.plan.baseLayer)
   const setBaseLayer = usePlanStore(s => s.setBaseLayer)
+  const plan = usePlanStore(s => s.plan)
   const [open, setOpen] = useState(true)
   const [calibOpen, setCalibOpen] = useState(false)
 
   if (!baseLayer) return null
-  const t = baseLayer.transform || { x: 0, y: 0, scale: 1, rotation: 0 }
 
-  function patch(p) {
-    setBaseLayer({ ...baseLayer, transform: { ...t, ...p } })
+  // 統一從 placement 讀;沒有就用 fallback (跟 BaseLayerRender 邏輯一致)
+  let p = baseLayer.placement
+  if (!p) {
+    const W = baseLayer.width || 1000, H = baseLayer.height || 1000
+    const bounds = plan.bounds
+    const fit = Math.min((bounds.w * 0.9) / W, (bounds.h * 0.9) / H)
+    p = {
+      drawW: W * fit, drawH: H * fit,
+      offsetX: (bounds.w - W * fit) / 2,
+      offsetY: (bounds.h - H * fit) / 2,
+      rotation: 0, opacity: 0.6
+    }
+  }
+
+  function patch(np) {
+    setBaseLayer({ ...baseLayer, placement: { ...p, ...np } })
   }
   function move(dx, dy, big) {
-    const step = big ? 500 : 50
-    patch({ x: t.x + dx * step, y: t.y + dy * step })
+    const step = big ? 1000 : 100
+    patch({ offsetX: p.offsetX + dx * step, offsetY: p.offsetY + dy * step })
   }
   function zoom(factor) {
-    patch({ scale: Math.max(0.1, Math.min(10, t.scale * factor)) })
+    // 以中心點為基準縮放
+    const cx = p.offsetX + p.drawW / 2
+    const cy = p.offsetY + p.drawH / 2
+    const newW = Math.max(50, p.drawW * factor)
+    const newH = Math.max(50, p.drawH * factor)
+    patch({
+      drawW: newW, drawH: newH,
+      offsetX: cx - newW / 2, offsetY: cy - newH / 2
+    })
   }
   function rotate(delta) {
-    patch({ rotation: (t.rotation + delta) % 360 })
+    patch({ rotation: ((p.rotation || 0) + delta + 360) % 360 })
   }
   function reset() {
-    patch({ x: 0, y: 0, scale: 1, rotation: 0 })
+    // 重置到首次上傳預設 (居中填滿可用區 90%)
+    const W = baseLayer.width || 1000, H = baseLayer.height || 1000
+    const bounds = plan.bounds
+    const fit = Math.min((bounds.w * 0.9) / W, (bounds.h * 0.9) / H)
+    patch({
+      drawW: W * fit, drawH: H * fit,
+      offsetX: (bounds.w - W * fit) / 2,
+      offsetY: (bounds.h - H * fit) / 2,
+      rotation: 0, opacity: 0.6
+    })
   }
-  function changePage(p) {
-    if (!baseLayer.pages || p < 1 || p > baseLayer.pageCount) return
-    const page = baseLayer.pages.find(pg => pg.page === p)
+  function changePage(np) {
+    if (!baseLayer.pages || np < 1 || np > baseLayer.pageCount) return
+    const page = baseLayer.pages.find(pg => pg.page === np)
     if (!page) return
     setBaseLayer({
       ...baseLayer,
-      currentPage: p,
+      currentPage: np,
       previewUrl: page.previewUrl,
       previewStoragePath: page.previewStoragePath,
       width: page.width,
       height: page.height
     })
   }
+
+  // cm → 顯示成 m (校準後才有意義)
+  const f = plan.svgUnitToRealCm || 1
+  const xM = ((p.offsetX * f) / 100).toFixed(1)
+  const yM = ((p.offsetY * f) / 100).toFixed(1)
+  const wM = ((p.drawW * f) / 100).toFixed(1)
+  const hM = ((p.drawH * f) / 100).toFixed(1)
 
   return (
     <div className="bg-white border rounded shadow-sm text-xs">
@@ -83,9 +123,18 @@ export default function BaseLayerControls() {
 
       {open && (
         <div className="p-2 flex items-center gap-3 flex-wrap">
-          {/* 位置控制 */}
+          {/* 直接輸入位置/寬高 (m) — v3_8 風格 */}
           <div className="flex items-center gap-1">
-            <span className="text-slate-500">位置</span>
+            <span className="text-slate-500">底圖 (m):</span>
+            <NumInput label="X" value={xM} onChange={v => patch({ offsetX: v * 100 / f })} />
+            <NumInput label="Y" value={yM} onChange={v => patch({ offsetY: v * 100 / f })} />
+            <NumInput label="寬" value={wM} onChange={v => patch({ drawW: v * 100 / f })} />
+            <NumInput label="高" value={hM} onChange={v => patch({ drawH: v * 100 / f })} />
+          </div>
+
+          {/* 4 方向微調 */}
+          <div className="flex items-center gap-1">
+            <span className="text-slate-500">移動</span>
             <div className="grid grid-cols-3 gap-0.5">
               <span />
               <Btn onClick={(e) => move(0, -1, e.shiftKey)}>↑</Btn>
@@ -97,14 +146,12 @@ export default function BaseLayerControls() {
               <Btn onClick={(e) => move(0, 1, e.shiftKey)}>↓</Btn>
               <span />
             </div>
-            <span className="text-slate-400 text-[10px]">(Shift=大步)</span>
           </div>
 
-          {/* 縮放 */}
+          {/* 等比縮放 */}
           <div className="flex items-center gap-1">
             <span className="text-slate-500">縮放</span>
             <Btn onClick={() => zoom(1/1.05)}>−</Btn>
-            <span className="w-12 text-center">{Math.round(t.scale * 100)}%</span>
             <Btn onClick={() => zoom(1.05)}>+</Btn>
             <Btn onClick={() => zoom(1/1.25)}>−−</Btn>
             <Btn onClick={() => zoom(1.25)}>++</Btn>
@@ -114,10 +161,18 @@ export default function BaseLayerControls() {
           <div className="flex items-center gap-1">
             <span className="text-slate-500">旋轉</span>
             <Btn onClick={() => rotate(-90)} title="左轉 90°">↺</Btn>
-            <span className="w-9 text-center">{t.rotation}°</span>
+            <span className="w-9 text-center">{p.rotation || 0}°</span>
             <Btn onClick={() => rotate(90)} title="右轉 90°">↻</Btn>
-            <Btn onClick={() => rotate(-1)}>‹</Btn>
-            <Btn onClick={() => rotate(1)}>›</Btn>
+          </div>
+
+          {/* 透明度 */}
+          <div className="flex items-center gap-1">
+            <span className="text-slate-500">透明度</span>
+            <input type="range" min="0.1" max="1" step="0.05"
+                   value={p.opacity ?? 0.6}
+                   onChange={e => patch({ opacity: Number(e.target.value) })}
+                   className="w-20" />
+            <span className="w-8">{Math.round((p.opacity ?? 0.6) * 100)}%</span>
           </div>
         </div>
       )}
@@ -131,5 +186,16 @@ function Btn({ children, onClick, title }) {
             className="px-1.5 py-0.5 border rounded hover:bg-slate-100 active:bg-slate-200 font-mono">
       {children}
     </button>
+  )
+}
+
+function NumInput({ label, value, onChange }) {
+  return (
+    <label className="flex items-center gap-0.5">
+      <span className="text-slate-400">{label}</span>
+      <input type="number" step="0.1" value={value}
+             onChange={e => onChange(Number(e.target.value))}
+             className="w-14 border rounded px-1 py-0.5 text-right" />
+    </label>
   )
 }

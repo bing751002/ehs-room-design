@@ -34,31 +34,50 @@ function snapToOrtho(p1, p2, force) {
 }
 
 /**
- * 底圖渲染:把使用者上傳的 DXF/PDF/圖片畫在 SVG 最底層,自動縮放置中到樓層 bounds 內。
- * - DXF: 把 dxfLines 轉成 <line> 元素 (Y 軸要翻轉,CAD Y 朝上,SVG Y 朝下)
- * - PDF/image: 用 <image> 元素直接嵌入 signedUrl/previewUrl
+ * 底圖渲染 — v3_8 風格:
+ *   底圖 placement 用 4 個 cm 值 (offsetX, offsetY, drawW, drawH) 直接畫到 SVG。
+ *   畫布 zoom 變大時,底圖跟所有其他元素一起放大 (走 SVG viewBox 縮放)。
+ *   保留 rotation/opacity 控制。第一次上傳時自動算 placement 居中填滿可用區。
  */
 function BaseLayerRender({ baseLayer, svgW, svgH }) {
   if (!baseLayer) return null
-  const t = baseLayer.transform || { x: 0, y: 0, scale: 1, rotation: 0 }
-  // 統一用 SVG 的 transform 屬性套 translate/rotate/scale,
-  // 避免每種類型都自己算座標。
-  const cx = svgW / 2, cy = svgH / 2
-  const transformStr = `translate(${t.x} ${t.y}) rotate(${t.rotation} ${cx} ${cy})`
+  // 新 placement schema (cm 單位,跟 SVG viewBox 同一個座標系):
+  //   { offsetX, offsetY, drawW, drawH, rotation, opacity }
+  // 舊資料可能還用 transform.{x,y,scale,rotation} → 自動 fallback
+  let p = baseLayer.placement
+  if (!p) {
+    // legacy compatibility
+    const t = baseLayer.transform || { x: 0, y: 0, scale: 1, rotation: 0 }
+    const W = baseLayer.width  || 1000
+    const H = baseLayer.height || 1000
+    const fit = Math.min((svgW * 0.9) / W, (svgH * 0.9) / H)
+    const s = fit * (t.scale || 1)
+    p = {
+      drawW: W * s,
+      drawH: H * s,
+      offsetX: (svgW - W * s) / 2 + (t.x || 0),
+      offsetY: (svgH - H * s) / 2 + (t.y || 0),
+      rotation: t.rotation || 0,
+      opacity: baseLayer.opacity ?? 0.6
+    }
+  }
+  const cx = p.offsetX + p.drawW / 2
+  const cy = p.offsetY + p.drawH / 2
+  const transformStr = p.rotation ? `rotate(${p.rotation} ${cx} ${cy})` : undefined
 
   if (baseLayer.type === 'dxf' && baseLayer.dxfLines?.length) {
     const bb = baseLayer.bbox
-    const fit = Math.min((svgW * 0.9) / bb.width, (svgH * 0.9) / bb.height)
-    const scale = fit * t.scale
-    const ox = (svgW - bb.width * scale) / 2 - bb.minX * scale
-    const oy = (svgH - bb.height * scale) / 2 + bb.maxY * scale  // CAD Y 朝上 → SVG Y 翻轉
+    const sx = p.drawW / (bb.width || 1)
+    const sy = p.drawH / (bb.height || 1)
     return (
-      <g transform={transformStr} opacity={0.55}>
+      <g transform={transformStr} opacity={p.opacity ?? 0.55}>
         {baseLayer.dxfLines.map((l, i) => (
           <line key={i}
-                x1={ox + l.x1 * scale} y1={oy - l.y1 * scale}
-                x2={ox + l.x2 * scale} y2={oy - l.y2 * scale}
-                stroke="#475569" strokeWidth={Math.max(1, 2 / scale * 0.5)} />
+                x1={p.offsetX + (l.x1 - bb.minX) * sx}
+                y1={p.offsetY + (bb.maxY - l.y1) * sy}  // CAD Y 朝上 → SVG Y 翻轉
+                x2={p.offsetX + (l.x2 - bb.minX) * sx}
+                y2={p.offsetY + (bb.maxY - l.y2) * sy}
+                stroke="#475569" strokeWidth={Math.max(1, 2 / Math.max(sx, sy))} />
         ))}
       </g>
     )
@@ -66,16 +85,13 @@ function BaseLayerRender({ baseLayer, svgW, svgH }) {
 
   const imgUrl = baseLayer.type === 'pdf' ? baseLayer.previewUrl : baseLayer.publicUrl
   if (!imgUrl) return null
-  const W = baseLayer.width, H = baseLayer.height
-  const fit = Math.min((svgW * 0.9) / W, (svgH * 0.9) / H)
-  const scale = fit * t.scale
-  const drawW = W * scale, drawH = H * scale
-  const x = (svgW - drawW) / 2
-  const y = (svgH - drawH) / 2
   return (
     <g transform={transformStr}>
-      <image href={imgUrl} x={x} y={y} width={drawW} height={drawH}
-             opacity={0.6} preserveAspectRatio="xMidYMid meet" />
+      <image href={imgUrl}
+             x={p.offsetX} y={p.offsetY}
+             width={p.drawW} height={p.drawH}
+             opacity={p.opacity ?? 0.6}
+             preserveAspectRatio="none" />
     </g>
   )
 }
@@ -257,6 +273,7 @@ export default function Canvas2D() {
       if (k === 'd') return setEditMode('add-door')
       if (k === 'n') return setEditMode('add-window')
       if (k === 'r') return setEditMode('add-space')
+      if (k === 'c') return setEditMode('add-column')
       if (k === 'm') return setEditMode('measure')
     }
     // 刪除 (支援多選)
@@ -270,6 +287,14 @@ export default function Canvas2D() {
         else if ((plan.spaces  || []).find(s => s.id === id)) removeSpace(id)
         else if (plan.rooms.find(r => r.id === id)) removeRoom(id)
         else if (plan.furniture.find(f => f.id === id)) removeFurniture(id)
+        else if (id?.startsWith('col') && plan.structuralColumns?.find(c => c.id === id)) {
+          // 刪掉柱子
+          const cur = usePlanStore.getState().plan
+          usePlanStore.getState().setPlan({
+            ...cur,
+            structuralColumns: cur.structuralColumns.filter(c => c.id !== id)
+          })
+        }
       }
       setSelected(null)
       setSelectedIds([])
@@ -327,6 +352,23 @@ export default function Canvas2D() {
       setEditMode('select')
       return
     }
+    if (editMode === 'add-column') {
+      // 點哪裡加一根 60×60 cm 柱子
+      const size = 60
+      const cur = usePlanStore.getState().plan
+      const newCol = {
+        id: 'col_' + Math.random().toString(36).slice(2, 9),
+        x: Math.round(p.x - size / 2),
+        y: Math.round(p.y - size / 2),
+        w: size, h: size
+      }
+      usePlanStore.getState().setPlan({
+        ...cur,
+        structuralColumns: [...(cur.structuralColumns || []), newCol]
+      })
+      // 連續加柱模式:不退回 select,可以連續點
+      return
+    }
     setSelected(null)
   }
 
@@ -366,10 +408,21 @@ export default function Canvas2D() {
           </g>
         ))}
 
-        {/* 結構柱 */}
-        {plan.structuralColumns.map((c, i) => (
-          <rect key={i} x={c.x} y={c.y} width={c.w} height={c.h} fill="#1f2937" />
-        ))}
+        {/* 結構柱 (點擊選取 → Backspace 可刪) */}
+        {plan.structuralColumns.map((c, i) => {
+          const id = c.id || `col_idx_${i}`
+          const isSel = selectedId === id
+          return (
+            <g key={id}
+               onMouseDown={(e) => { e.stopPropagation(); setSelected(id) }}
+               style={{ cursor: 'pointer' }}>
+              <rect x={c.x} y={c.y} width={c.w} height={c.h}
+                    fill={isSel ? '#ef4444' : '#1f2937'}
+                    stroke={isSel ? '#fbbf24' : 'none'}
+                    strokeWidth={isSel ? 4 : 0} />
+            </g>
+          )
+        })}
 
         {/* 空間多邊形 (填色 + 名稱 + 面積),牆已併入 WallsLayer */}
         {(plan.spaces || []).map(sp => (
