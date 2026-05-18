@@ -5,6 +5,8 @@ import { newId, newWallId, newDoorId, newWindowId, newSpaceId } from '../lib/con
 import { searchSimilarCases, caseToPromptText } from '../lib/caseLibrary.js'
 import { listRules, rulesToPromptText } from '../lib/internalRules.js'
 import { loadChatHistory, appendChatMessage, clearChatHistory } from '../lib/chatHistory.js'
+import { createRoomTemplate } from '../lib/roomTemplates.js'
+import { spaceVertices } from '../lib/constraints.js'
 
 /**
  * 右側 AI 對話面板 — 仿 illoca 的 Agent 風格
@@ -67,6 +69,17 @@ export default function ChatPanel() {
         rulesContext = rulesToPromptText(rules)
       } catch (e) { console.warn('內部規則讀取失敗', e) }
 
+      // 房間庫:把使用者自訂的房型塞進 prompt,AI 規劃時優先用這些
+      let templatesContext = ''
+      try {
+        const { listRoomTemplates } = await import('../lib/roomTemplates.js')
+        const ts = await listRoomTemplates()
+        if (ts.length) {
+          templatesContext = '\n\n# 📚 使用者自訂房間庫 (規劃時優先使用這些尺寸與設計考量):\n' +
+            ts.slice(0, 30).map(t => `- ${t.name} [${t.type}] ${t.width_cm}×${t.depth_cm}×${t.height_cm}cm${t.description ? ' — ' + t.description : ''}`).join('\n')
+        }
+      } catch (e) { console.warn('房間庫讀取失敗', e) }
+
       // RAG:依使用者最新訊息粗略抓關鍵字當類型,從案例庫撈相近案例給 AI 當參考
       let casesContext = ''
       try {
@@ -87,7 +100,7 @@ export default function ChatPanel() {
 
       const reply = await chatWithClaude(
         newMessages.map(m => ({ role: m.role, content: m.content })),
-        { plan, baseLayerImageUrl, verbose: opts.verbose, casesContext, rulesContext }
+        { plan, baseLayerImageUrl, verbose: opts.verbose, casesContext, rulesContext, templatesContext }
       )
 
       const { text: cleanText, actions } = parsePlanActions(reply)
@@ -213,15 +226,47 @@ export default function ChatPanel() {
           <div className="text-sm font-semibold">🤖 規劃助手</div>
           <div className="text-[10px] text-slate-500">由 Claude 提供 · 內部用</div>
         </div>
-        {messages.length > 0 && (
-          <button onClick={() => {
-            if (confirm('清除這個方案的所有 AI 對話歷史?(雲端也會清掉)')) {
-              setMessages([])
-              clearChatHistory(planId).catch(e => console.warn(e))
-            }
-          }}
-                  className="text-xs text-slate-500 hover:text-slate-800">清除</button>
-        )}
+        <div className="flex items-center gap-2 text-xs">
+          {plan.spaces?.length > 0 && (
+            <button onClick={async () => {
+              if (!confirm(`把目前畫布上的 ${plan.spaces.length} 個空間都存到房間庫?(下次規劃時可重用)`)) return
+              let ok = 0
+              for (const sp of plan.spaces) {
+                try {
+                  const vs = spaceVertices(sp)
+                  const xs = vs.map(v => v.x), ys = vs.map(v => v.y)
+                  const w = Math.round(Math.max(...xs) - Math.min(...xs))
+                  const h = Math.round(Math.max(...ys) - Math.min(...ys))
+                  await createRoomTemplate({
+                    name: sp.name || '空間',
+                    type: sp.type || 'custom',
+                    category: 'AI 建議',
+                    width_cm: w, depth_cm: h,
+                    height_cm: sp.height || 280,
+                    color: sp.color || '#e2e8f0',
+                    description: sp.rationale || '',
+                    source: 'ai_chat'
+                  })
+                  ok++
+                } catch (e) { console.warn('存房型失敗', e) }
+              }
+              alert(`已存 ${ok} 個房型到房間庫`)
+            }}
+                    title="把畫布上所有空間存到房間庫供之後重用"
+                    className="text-emerald-600 hover:underline">
+              📚 加入房間庫
+            </button>
+          )}
+          {messages.length > 0 && (
+            <button onClick={() => {
+              if (confirm('清除這個方案的所有 AI 對話歷史?(雲端也會清掉)')) {
+                setMessages([])
+                clearChatHistory(planId).catch(e => console.warn(e))
+              }
+            }}
+                    className="text-slate-500 hover:text-slate-800">清除</button>
+          )}
+        </div>
       </div>
 
       {/* 對話訊息區 */}

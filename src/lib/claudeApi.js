@@ -210,6 +210,7 @@ export async function chatWithClaude(messages, context = {}) {
     : bl ? '⚠ 尚未校準比例尺 — 坪數可能不準,規劃前要請使用者先校準!' : ''
   const casesContext = context.casesContext || ''
   const rulesContext = context.rulesContext || ''
+  const templatesContext = context.templatesContext || ''
   const planContext = context.plan ? `
 # 目前畫布狀態
 - 樓層 bounds: ${context.plan.bounds.w}×${context.plan.bounds.h} cm
@@ -285,7 +286,7 @@ export async function chatWithClaude(messages, context = {}) {
     const resp = await client.messages.create({
       model: MODEL,
       max_tokens: MAX_TOKENS,
-      system: SYSTEM_PROMPT + rulesContext + planContext + casesContext + verboseInstr,
+      system: SYSTEM_PROMPT + rulesContext + templatesContext + planContext + casesContext + verboseInstr,
       tools,
       messages: convoMessages
     })

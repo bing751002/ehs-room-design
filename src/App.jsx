@@ -11,6 +11,7 @@ import RenderPage from './pages/RenderPage.jsx'
 import DocsPage from './pages/DocsPage.jsx'
 import CaseLibraryPage from './pages/CaseLibraryPage.jsx'
 import RulesPage from './pages/RulesPage.jsx'
+import RoomLibraryPage from './pages/RoomLibraryPage.jsx'
 import OnboardingTour from './components/OnboardingTour.jsx'
 
 export default function App() {
@@ -45,6 +46,7 @@ export default function App() {
           <Route path="/" element={<PlanList />} />
           <Route path="/cases" element={<CaseLibraryPage />} />
           <Route path="/rules" element={<RulesPage />} />
+          <Route path="/library" element={<RoomLibraryPage />} />
           <Route path="/plan/:id" element={<EditorLayout />}>
             <Route index element={<Navigate to="editor" replace />} />
             <Route path="editor" element={<Editor />} />

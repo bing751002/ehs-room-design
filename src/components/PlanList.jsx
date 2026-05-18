@@ -44,6 +44,9 @@ export default function PlanList() {
           <Link to="/rules" className="border px-3 py-1.5 rounded hover:bg-slate-50 text-sm">
             ⚖️ 內部規則
           </Link>
+          <Link to="/library" className="border px-3 py-1.5 rounded hover:bg-slate-50 text-sm">
+            🏠 房間庫
+          </Link>
           <button onClick={create} className="bg-brand-700 text-white px-3 py-1.5 rounded hover:bg-brand-500">
             + 新增方案
           </button>
