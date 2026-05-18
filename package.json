@@ -1,0 +1,34 @@
+{
+  "name": "space-planner-cloud",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "東森空間規劃實驗室 — 雲端版 v4 (React + Three.js + Supabase)",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.96.0",
+    "@google/genai": "^2.4.0",
+    "@react-three/drei": "^9.114.0",
+    "@react-three/fiber": "^8.17.10",
+    "@supabase/supabase-js": "^2.45.0",
+    "dxf-parser": "^1.1.2",
+    "pdfjs-dist": "^5.7.284",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.27.0",
+    "three": "^0.169.0",
+    "zustand": "^4.5.5"
+  },
+  "devDependencies": {
+    "@types/three": "^0.169.0",
+    "@vitejs/plugin-react": "^4.3.3",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.4.47",
+    "tailwindcss": "^3.4.14",
+    "vite": "^5.4.10"
+  }
+}
