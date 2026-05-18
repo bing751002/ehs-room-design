@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { spaceVertices, polygonCenter, polygonArea, polygonRealArea, computeSnap } from '../../lib/constraints.js'
 import { usePlanStore } from '../../store/planStore.js'
 
@@ -15,6 +16,8 @@ export default function SpacePolygon({ space, selected, onSelect }) {
   const toggleSelectedId = usePlanStore(s => s.toggleSelectedId)
   const setSelectedIds = usePlanStore(s => s.setSelectedIds)
   const isMultiSelected = selectedIds.includes(space.id)
+  // 拖移/縮放中暫存 (顯示尺寸 ruler)
+  const [activeRuler, setActiveRuler] = useState(null)  // { minX, minY, maxX, maxY, type: 'move'|'resize' }
 
   const plan = usePlanStore.getState().plan
   const center = polygonCenter(vertices)
@@ -117,9 +120,16 @@ export default function SpacePolygon({ space, selected, onSelect }) {
         const newVs = g.vs.map(v => ({ x: v.x + dx, y: v.y + dy }))
         updateSpace(g.id, { vertices: newVs, x: undefined, y: undefined, w: undefined, h: undefined })
       }
+      // 顯示移動 ruler (位置)
+      setActiveRuler({
+        type: 'move',
+        minX: movingBbox.minX + dx, minY: movingBbox.minY + dy,
+        maxX: movingBbox.maxX + dx, maxY: movingBbox.maxY + dy
+      })
     }
     function up() {
       setSnapGuides([])
+      setActiveRuler(null)
       window.removeEventListener('mousemove', move)
       window.removeEventListener('mouseup', up)
     }
@@ -219,8 +229,16 @@ export default function SpacePolygon({ space, selected, onSelect }) {
         y: Math.round(anchor.y + (v.y - anchor.y) * scaleY)
       }))
       updateSpace(space.id, { vertices: cleanVs, x: undefined, y: undefined, w: undefined, h: undefined })
+      // 計算新 bbox 顯示 ruler
+      const cxs = cleanVs.map(v => v.x), cys = cleanVs.map(v => v.y)
+      setActiveRuler({
+        type: 'resize',
+        minX: Math.min(...cxs), minY: Math.min(...cys),
+        maxX: Math.max(...cxs), maxY: Math.max(...cys)
+      })
     }
     function up() {
+      setActiveRuler(null)
       window.removeEventListener('mousemove', move)
       window.removeEventListener('mouseup', up)
     }
@@ -237,6 +255,19 @@ export default function SpacePolygon({ space, selected, onSelect }) {
     updateSpace(space.id, { vertices: newVs })
   }
 
+  // 拖移/縮放時的即時尺寸 ruler
+  const plan2 = usePlanStore.getState().plan
+  const f = plan2?.svgUnitToRealCm || 1
+  const ruler = activeRuler ? {
+    minX: activeRuler.minX, minY: activeRuler.minY,
+    maxX: activeRuler.maxX, maxY: activeRuler.maxY,
+    cx: (activeRuler.minX + activeRuler.maxX) / 2,
+    cy: (activeRuler.minY + activeRuler.maxY) / 2,
+    wM: ((activeRuler.maxX - activeRuler.minX) * f / 100).toFixed(2),
+    hM: ((activeRuler.maxY - activeRuler.minY) * f / 100).toFixed(2),
+    areaPing: ((activeRuler.maxX - activeRuler.minX) * (activeRuler.maxY - activeRuler.minY) * f * f / 33057.85).toFixed(2)
+  } : null
+
   return (
     <g>
       {/* 填色 + 點擊區 */}
@@ -247,6 +278,33 @@ export default function SpacePolygon({ space, selected, onSelect }) {
                strokeWidth={(selected || isMultiSelected) ? 4 : 0} strokeDasharray="8 6"
                onMouseDown={dragWhole}
                style={{ cursor: 'move' }} />
+
+      {/* 即時尺寸 ruler — 拖移時顯示 */}
+      {ruler && (() => {
+        const rulerFont = Math.max(18, Math.min(fontSub * 1.1, 50))
+        const padH = rulerFont * 0.4, padV = rulerFont * 0.2
+        const offsetTxt = rulerFont * 1.2
+        // 4 邊外側顯示尺寸 (寬:上下;長:左右)
+        return (
+          <g pointerEvents="none">
+            {/* bbox 外框 (虛線) */}
+            <rect x={ruler.minX} y={ruler.minY}
+                  width={ruler.maxX - ruler.minX} height={ruler.maxY - ruler.minY}
+                  fill="none" stroke="#f59e0b" strokeWidth={3} strokeDasharray="10 6" opacity={0.8} />
+            {/* 上方寬度標籤 */}
+            <RulerLabel x={ruler.cx} y={ruler.minY - offsetTxt}
+                        text={`${ruler.wM} m`} fontSize={rulerFont} />
+            {/* 右方長度標籤 (旋轉 90) */}
+            <g transform={`translate(${ruler.maxX + offsetTxt} ${ruler.cy}) rotate(90)`}>
+              <RulerLabel x={0} y={0} text={`${ruler.hM} m`} fontSize={rulerFont} />
+            </g>
+            {/* 中心面積 (大字 + 對比色) */}
+            <RulerLabel x={ruler.cx} y={ruler.maxY + offsetTxt}
+                        text={`📐 ${ruler.areaPing} 坪`} fontSize={rulerFont * 1.1}
+                        bg="#10b981" />
+          </g>
+        )
+      })()}
 
       {/* 名稱與面積 — 字體自動隨畫布縮放,確保螢幕上一直可讀 */}
       <text x={center.x} y={center.y - fontMain * 0.4} fontSize={fontMain} fontWeight="700"
@@ -321,6 +379,26 @@ export default function SpacePolygon({ space, selected, onSelect }) {
           })}
         </g>
       )}
+    </g>
+  )
+}
+
+/**
+ * SVG label with rounded background — 給尺寸 ruler 用,確保在任何背景上都看得清
+ */
+function RulerLabel({ x, y, text, fontSize = 24, bg = '#f59e0b', fg = 'white' }) {
+  // 粗估文字寬度 (每個字 ~ fontSize × 0.6)
+  const w = text.length * fontSize * 0.65
+  const h = fontSize * 1.4
+  return (
+    <g>
+      <rect x={x - w / 2} y={y - h / 2}
+            width={w} height={h} rx={h * 0.25}
+            fill={bg} opacity={0.95} />
+      <text x={x} y={y} fontSize={fontSize} fontWeight="700"
+            fill={fg} textAnchor="middle" dominantBaseline="middle">
+        {text}
+      </text>
     </g>
   )
 }
