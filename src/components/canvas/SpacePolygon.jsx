@@ -1,4 +1,4 @@
-import { spaceVertices, polygonCenter, polygonArea, polygonRealArea } from '../../lib/constraints.js'
+import { spaceVertices, polygonCenter, polygonArea, polygonRealArea, computeSnap } from '../../lib/constraints.js'
 import { usePlanStore } from '../../store/planStore.js'
 
 /**
@@ -66,16 +66,60 @@ export default function SpacePolygon({ space, selected, onSelect }) {
           id: sp.id, vs: spaceVertices(sp).map(v => ({ ...v }))
         }))
       : [{ id: space.id, vs: vertices.map(v => ({ ...v })) }]
+    // 整組的 bbox (用來算 snap)
+    const allVs = groupStart.flatMap(g => g.vs)
+    const movingBbox = {
+      minX: Math.min(...allVs.map(v => v.x)),
+      minY: Math.min(...allVs.map(v => v.y)),
+      maxX: Math.max(...allVs.map(v => v.x)),
+      maxY: Math.max(...allVs.map(v => v.y))
+    }
+    // 其他空間的 bbox (snap target)
+    const movingIds = new Set(groupStart.map(g => g.id))
+    const targets = []
+    for (const sp of (plan.spaces || [])) {
+      if (movingIds.has(sp.id)) continue
+      const tvs = spaceVertices(sp)
+      if (tvs.length < 3) continue
+      targets.push({
+        minX: Math.min(...tvs.map(v => v.x)),
+        minY: Math.min(...tvs.map(v => v.y)),
+        maxX: Math.max(...tvs.map(v => v.x)),
+        maxY: Math.max(...tvs.map(v => v.y))
+      })
+    }
+    // 底圖 placement 也當 target
+    if (plan.baseLayer?.placement) {
+      const bp = plan.baseLayer.placement
+      targets.push({
+        minX: bp.offsetX, minY: bp.offsetY,
+        maxX: bp.offsetX + bp.drawW, maxY: bp.offsetY + bp.drawH
+      })
+    }
+    // 樓層 bounds 邊緣
+    if (plan.bounds) {
+      targets.push({ minX: 0, minY: 0, maxX: plan.bounds.w, maxY: plan.bounds.h })
+    }
+    const setSnapGuides = usePlanStore.getState().setSnapGuides
+
     function move(ev) {
       const p = getPos(ev); if (!p) return
-      const dx = Math.round(p.x - start.x)
-      const dy = Math.round(p.y - start.y)
+      const rawDx = Math.round(p.x - start.x)
+      const rawDy = Math.round(p.y - start.y)
+      // 按 Alt 暫停 snap
+      let dx = rawDx, dy = rawDy, guides = []
+      if (!ev.altKey) {
+        const snap = computeSnap({ movingBbox, dx: rawDx, dy: rawDy, targets, tolerance: 25 })
+        dx = snap.dx; dy = snap.dy; guides = snap.guides
+      }
+      setSnapGuides(guides)
       for (const g of groupStart) {
         const newVs = g.vs.map(v => ({ x: v.x + dx, y: v.y + dy }))
         updateSpace(g.id, { vertices: newVs, x: undefined, y: undefined, w: undefined, h: undefined })
       }
     }
     function up() {
+      setSnapGuides([])
       window.removeEventListener('mousemove', move)
       window.removeEventListener('mouseup', up)
     }

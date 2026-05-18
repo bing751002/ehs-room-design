@@ -50,6 +50,10 @@ export const usePlanStore = create((set, get) => ({
   clipboard: null,
   setClipboard: (c) => set({ clipboard: c }),
 
+  // 對齊輔助線 (拖移時顯示,放開時清掉)
+  snapGuides: [],  // [{ type: 'v'|'h', value: number }] 垂直/水平輔助線
+  setSnapGuides: (gs) => set({ snapGuides: gs }),
+
   // 量距離工具:點兩點記錄結果
   measurePoints: [],
   pinnedMeasures: [],  // 釘住的量測結果 [{a:{x,y}, b:{x,y}, label}]

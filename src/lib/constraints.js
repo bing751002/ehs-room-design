@@ -184,6 +184,79 @@ export function polygonCenter(vs) {
   return { x: sx / vs.length, y: sy / vs.length }
 }
 
+/**
+ * 計算拖移時的對齊吸附 + 輔助線。
+ * @param {Object} args
+ *   - movingBbox: { minX, minY, maxX, maxY } 拖動中物件的 bbox
+ *   - movingVs: 多邊形頂點 (用來算當下位置)
+ *   - dx, dy: 候選的位移量
+ *   - targets: 其他可吸附的物件 [{ minX, minY, maxX, maxY }]
+ *   - tolerance: 吸附距離 (svg unit)
+ * @returns { dx, dy, guides: [{ type:'v'|'h', value, range:[start,end] }] }
+ */
+export function computeSnap({ movingBbox, dx, dy, targets, tolerance = 30 }) {
+  let bestDx = dx, bestDy = dy
+  let bestSnapX = null, bestSnapY = null
+  const candidatesX = []  // 移動後 bbox 的左/中/右 想對齊的 X 線
+  const candidatesY = []
+  const newMinX = movingBbox.minX + dx
+  const newMaxX = movingBbox.maxX + dx
+  const newCenterX = (newMinX + newMaxX) / 2
+  const newMinY = movingBbox.minY + dy
+  const newMaxY = movingBbox.maxY + dy
+  const newCenterY = (newMinY + newMaxY) / 2
+
+  // 收集 target 的 X 邊
+  const targetXs = []
+  const targetYs = []
+  for (const t of targets) {
+    targetXs.push(t.minX, (t.minX + t.maxX) / 2, t.maxX)
+    targetYs.push(t.minY, (t.minY + t.maxY) / 2, t.maxY)
+  }
+
+  // 對 X 軸:newMinX, newCenterX, newMaxX 看看哪個最接近 targetXs
+  const xCandidates = [
+    { my: newMinX, label: 'left' },
+    { my: newCenterX, label: 'center' },
+    { my: newMaxX, label: 'right' }
+  ]
+  let minDistX = tolerance + 1
+  for (const c of xCandidates) {
+    for (const tx of targetXs) {
+      const d = Math.abs(c.my - tx)
+      if (d < minDistX) {
+        minDistX = d
+        bestSnapX = tx
+        bestDx = dx + (tx - c.my)
+      }
+    }
+  }
+
+  // 對 Y 軸
+  const yCandidates = [
+    { my: newMinY, label: 'top' },
+    { my: newCenterY, label: 'center' },
+    { my: newMaxY, label: 'bottom' }
+  ]
+  let minDistY = tolerance + 1
+  for (const c of yCandidates) {
+    for (const ty of targetYs) {
+      const d = Math.abs(c.my - ty)
+      if (d < minDistY) {
+        minDistY = d
+        bestSnapY = ty
+        bestDy = dy + (ty - c.my)
+      }
+    }
+  }
+
+  const guides = []
+  if (bestSnapX != null) guides.push({ type: 'v', value: bestSnapX })
+  if (bestSnapY != null) guides.push({ type: 'h', value: bestSnapY })
+
+  return { dx: bestDx, dy: bestDy, guides }
+}
+
 /** 點是否在多邊形內 (ray-casting) */
 export function pointInPolygon(p, vs) {
   let inside = false

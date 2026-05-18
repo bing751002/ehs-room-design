@@ -130,6 +130,7 @@ export default function Canvas2D() {
   const measurePoints = usePlanStore(s => s.measurePoints)
   const addMeasurePoint = usePlanStore(s => s.addMeasurePoint)
   const clearMeasurePoints = usePlanStore(s => s.clearMeasurePoints)
+  const snapGuides = usePlanStore(s => s.snapGuides) || []
   const pinnedMeasures = usePlanStore(s => s.pinnedMeasures)
   const pinCurrentMeasure = usePlanStore(s => s.pinCurrentMeasure)
   const removePinnedMeasure = usePlanStore(s => s.removePinnedMeasure)
@@ -474,6 +475,15 @@ export default function Canvas2D() {
             </g>
           )
         })()}
+
+        {/* 對齊輔助線 (拖移時顯示) */}
+        {snapGuides.map((g, i) => (
+          g.type === 'v'
+            ? <line key={`sg-${i}`} x1={g.value} y1={0} x2={g.value} y2={svgH}
+                    stroke="#ef4444" strokeWidth={2} strokeDasharray="6 4" opacity={0.85} pointerEvents="none" />
+            : <line key={`sg-${i}`} x1={0} y1={g.value} x2={svgW} y2={g.value}
+                    stroke="#ef4444" strokeWidth={2} strokeDasharray="6 4" opacity={0.85} pointerEvents="none" />
+        ))}
 
         {/* 已釘住的量距離 (永遠顯示) */}
         {pinnedMeasures.map((m, i) => {

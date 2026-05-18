@@ -4,6 +4,7 @@ import { chatWithClaude, parsePlanActions, claudeReady } from '../lib/claudeApi.
 import { newId, newWallId, newDoorId, newWindowId, newSpaceId } from '../lib/constraints.js'
 import { searchSimilarCases, caseToPromptText } from '../lib/caseLibrary.js'
 import { listRules, rulesToPromptText } from '../lib/internalRules.js'
+import { loadChatHistory, appendChatMessage, clearChatHistory } from '../lib/chatHistory.js'
 
 /**
  * 右側 AI 對話面板 — 仿 illoca 的 Agent 風格
@@ -23,6 +24,7 @@ const QUICK_PROMPTS = [
 export default function ChatPanel() {
   const plan = usePlanStore(s => s.plan)
   const setPlan = usePlanStore(s => s.setPlan)
+  const planId = usePlanStore(s => s.planId)
   const [messages, setMessages] = useState([])
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
@@ -33,6 +35,16 @@ export default function ChatPanel() {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' })
   }, [messages, busy])
 
+  // 載入該 plan 的對話歷史 (切換方案時自動載入)
+  useEffect(() => {
+    if (!planId) return
+    let cancelled = false
+    loadChatHistory(planId).then(hist => {
+      if (!cancelled && hist?.length) setMessages(hist)
+    }).catch(e => console.warn(e))
+    return () => { cancelled = true }
+  }, [planId])
+
   async function send(text, opts = {}) {
     if (!text.trim() || busy) return
     setErr('')
@@ -41,6 +53,8 @@ export default function ChatPanel() {
     setMessages(newMessages)
     setInput('')
     setBusy(true)
+    // 存 user 訊息到雲端 (背景,不阻塞)
+    appendChatMessage(planId, userMsg).catch(e => console.warn(e))
     try {
       const baseLayerImageUrl = plan.baseLayer?.type === 'pdf'
         ? plan.baseLayer.previewUrl
@@ -77,7 +91,9 @@ export default function ChatPanel() {
       )
 
       const { text: cleanText, actions } = parsePlanActions(reply)
-      setMessages(m => [...m, { role: 'assistant', content: cleanText || '(已套用變更到畫布)', actions }])
+      const asstMsg = { role: 'assistant', content: cleanText || '(已套用變更到畫布)', actions }
+      setMessages(m => [...m, asstMsg])
+      appendChatMessage(planId, asstMsg).catch(e => console.warn(e))
 
       // 套用 AI 給的 plan-action
       for (const act of actions) applyAction(act)
@@ -198,7 +214,12 @@ export default function ChatPanel() {
           <div className="text-[10px] text-slate-500">由 Claude 提供 · 內部用</div>
         </div>
         {messages.length > 0 && (
-          <button onClick={() => setMessages([])}
+          <button onClick={() => {
+            if (confirm('清除這個方案的所有 AI 對話歷史?(雲端也會清掉)')) {
+              setMessages([])
+              clearChatHistory(planId).catch(e => console.warn(e))
+            }
+          }}
                   className="text-xs text-slate-500 hover:text-slate-800">清除</button>
         )}
       </div>
