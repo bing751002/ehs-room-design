@@ -1,18 +1,20 @@
 /**
  * 畫布右上方向標 + 左下比例尺 (覆蓋在 Canvas2D 之上)
  */
-export default function MapOverlay({ zoom, svgW, svgH }) {
+export default function MapOverlay({ zoom, svgW, svgH, svgUnitToRealCm = 1 }) {
   // 比例尺 — 以螢幕像素計算,顯示對應的真實 cm/m
-  // zoom = 1 SVG 單位 = zoom px。 1 SVG 單位 = 1 cm。所以 100 px 螢幕 = 100/zoom cm。
-  // 選個適合長度顯示
+  // zoom = 1 SVG 單位 = zoom px。 1 SVG 單位 = svgUnitToRealCm 真實 cm。
+  // 所以螢幕 px = svgUnit * zoom,而 svgUnit = realCm / svgUnitToRealCm
+  // 推出:螢幕 px = (realCm / svgUnitToRealCm) * zoom
+  // 反過來:realCm = screenPx * svgUnitToRealCm / zoom
   const targetScreenPx = 120
-  const realCm = targetScreenPx / zoom
+  const realCm = targetScreenPx * svgUnitToRealCm / zoom
   // 找接近的整數 m/cm
   const niceLengths = [10, 25, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
   let scaleCm = niceLengths.reduce((a, b) =>
     Math.abs(b - realCm) < Math.abs(a - realCm) ? b : a
   , niceLengths[0])
-  const scalePx = scaleCm * zoom
+  const scalePx = (scaleCm / svgUnitToRealCm) * zoom
 
   const labelText = scaleCm >= 100 ? `${(scaleCm/100).toFixed(scaleCm >= 1000 ? 0 : 1)} m` : `${scaleCm} cm`
 

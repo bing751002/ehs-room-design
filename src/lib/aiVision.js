@@ -11,35 +11,45 @@ import Anthropic from '@anthropic-ai/sdk'
 const apiKey = import.meta.env.VITE_CLAUDE_API_KEY
 const client = apiKey ? new Anthropic({ apiKey, dangerouslyAllowBrowser: true }) : null
 
-const SYSTEM = `你是建築平面圖辨識引擎。看一張平面圖,輸出 JSON 描述其中的牆/門/窗/空間/結構柱。
+const SYSTEM = `你是嚴謹的建築平面圖辨識引擎。**準確 > 完整,缺項 > 錯項**。
 
 # 座標系統 (重要!)
 **所有座標都用 normalized [0, 1] 圖像座標**:
-- (0, 0) = 圖像左上角
-- (1, 1) = 圖像右下角
+- (0, 0) = 圖像「左上角」(0% 左, 0% 上)
+- (1, 1) = 圖像「右下角」(100% 右, 100% 下)
 - 不要估算 cm,**就用 0-1 描述「在圖上什麼位置」**
+
+# 重要工作流程
+**Step 1 先誠實評估這張圖**:
+- 是否模糊 / 大小傾斜 / 解析度低?
+- 是否非標準平面圖 (3D 渲染、效果圖、施工剖面、scan 不清楚) → 直接回空結果 + 低 confidence
+
+**Step 2 才開始辨識** (有信心才畫):
+- **柱子**:看到「實心方塊 / 黑底方塊 / 軸線交點處的小方塊」才算。**不是每個交叉點都是柱子!** 軸線交叉只是參考線。**只回明確看見的柱子,寧可漏掉**。常見:整層 8-20 根,排成規則網格 (例如 4 列 × 5 排)。如果你看到 ≥ 30 個 columns,**你錯了**,請只保留最明顯的。
+- **牆**:外牆是最外圈的粗黑實線;內牆是房間之間的較細實線。不要把家具線、設備邊框、軸線當牆。
+- **門**:必須同時有「弧線」+「牆上缺口」兩個特徵才算。
+- **窗**:牆段中間「兩條平行細線」+ 牆缺口。
+- **空間**:只標**圖上有中文標籤的房間**(例如「主臥」「茶水間」)。看不到名字的不要硬加。
 
 # 輸出規範
 **只回 JSON,不要 markdown 框、不要前後文字**:
 
 \`\`\`
 {
-  "scale_note": "你看到的軸線標註與比例線索",
-  "confidence": 0.7,
+  "scale_note": "...",
+  "confidence": 0.0~1.0,
+  "image_quality": "good" | "ok" | "poor",
+  "is_floor_plan": true | false,
   "walls": [
     {"x1": 0.05, "y1": 0.08, "x2": 0.95, "y2": 0.08, "kind": "exterior"}
   ],
-  "doors": [
-    {"wallIndex": 3, "t": 0.5, "width_norm": 0.04, "swing": "in-right"}
-  ],
-  "windows": [
-    {"wallIndex": 0, "t": 0.3, "width_norm": 0.08}
-  ],
+  "doors": [{"wallIndex": 3, "t": 0.5, "width_norm": 0.04, "swing": "in-right"}],
+  "windows": [{"wallIndex": 0, "t": 0.3, "width_norm": 0.08}],
   "spaces": [
     {
-      "name": "辦公室",
-      "type": "office",
-      "color": "#bfdbfe",
+      "name": "主臥",
+      "type": "lounge",
+      "color": "#fef3c7",
       "vertices": [{"x":0.1,"y":0.1},{"x":0.4,"y":0.1},{"x":0.4,"y":0.4},{"x":0.1,"y":0.4}]
     }
   ],
@@ -49,19 +59,12 @@ const SYSTEM = `你是建築平面圖辨識引擎。看一張平面圖,輸出 JS
 }
 \`\`\`
 
-# 重要原則
-1. **準確至上,寧缺勿濫**: 看不清楚的不要硬加,寧可少。confidence 設低 (例 0.3) 也比假裝高分好。
-2. **牆 = 圖上實際畫出的牆線**(實線、雙線、厚線)。不要把家具邊緣、車道、外框當牆。
-3. **門 = 圓弧 + 牆上缺口** 同時出現。沒看到弧不要硬加門。
-4. **窗 = 牆上兩條平行線中間有縫**。
-5. **空間命名只用看得到的中文/英文字標籤**,看不到字就用 type 當名稱(例如 "辦公區")。
-6. **不要編造**任何沒看到的房間。**寧可只給 3 個準的,不要給 15 個亂的**。
-7. width_norm / size_norm 也是 0-1 (相對於圖像短邊)。
-8. type 從: office, meeting, pantry, gym, sauna, shower, locker, lounge, restroom, corridor, custom。
-9. kind: exterior (外牆) / interior (內牆) / partition (輕隔間)。
-
-# 看不到/不確定就回空陣列
-寧可給空陣列也不要瞎猜。
+# 關鍵戒律
+1. **柱子上限:**如果整張圖你判斷有 > 30 根柱子,你一定錯,**只回最確定的 10-20 根**。
+2. 若 is_floor_plan = false 或 image_quality = poor → 全部陣列回空,confidence < 0.3。
+3. type 從: office, meeting, pantry, gym, sauna, shower, locker, lounge, restroom, corridor, custom。
+4. kind: exterior / interior / partition。
+5. **寧可給空陣列也不要瞎猜**。confidence < 0.5 時使用者會被警告。
 `
 
 /**

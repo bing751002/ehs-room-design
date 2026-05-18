@@ -33,6 +33,23 @@ export const usePlanStore = create((set, get) => ({
   editMode: 'select',
   setEditMode: (m) => set({ editMode: m }),
 
+  // 畫布縮放比例 (給 SpacePolygon 等讀)
+  canvasZoom: 0.15,
+  setCanvasZoom: (z) => set({ canvasZoom: z }),
+
+  // 多選 ids (Shift+click 累加)
+  selectedIds: [],
+  setSelectedIds: (ids) => set({ selectedIds: ids }),
+  toggleSelectedId: (id) => set(s => ({
+    selectedIds: s.selectedIds.includes(id)
+      ? s.selectedIds.filter(x => x !== id)
+      : [...s.selectedIds, id]
+  })),
+
+  // 剪貼簿 (Cmd+C 暫存)
+  clipboard: null,
+  setClipboard: (c) => set({ clipboard: c }),
+
   // 量距離工具:點兩點記錄結果
   measurePoints: [],
   pinnedMeasures: [],  // 釘住的量測結果 [{a:{x,y}, b:{x,y}, label}]
@@ -143,34 +160,35 @@ export const usePlanStore = create((set, get) => ({
   },
 
   /**
-   * 套用比例尺校準。傳入「目前 svg 兩點距離」與「實際距離 (cm)」,
-   * 自動調整 baseLayer.transform.scale 並把 ratio 記在 scaleCalibration。
+   * 套用比例尺校準。改良版:
+   *  - 不再動 baseLayer.transform.scale (避免整張底圖跳大跳小)
+   *  - 改成記錄「1 svg 單位 = X 真實 cm」的係數,所有坪數/量距離讀這個
+   *  - svgUnitToRealCm 存在 plan 頂層,方便牆/空間共用
    */
   applyScaleCalibration({ method, svgPx, realCm, ratio, note }) {
     const s = get()
     const bl = s.plan.baseLayer
-    if (!bl) return
-    const t = bl.transform || { x: 0, y: 0, scale: 1, rotation: 0 }
-    let multiplier = 1
+    let factor = 1  // 1 svg unit = factor 真實 cm
     if (method === 'two-point') {
       if (!svgPx || !realCm) return
-      multiplier = realCm / svgPx
+      factor = realCm / svgPx
     } else if (method === 'ratio') {
-      // ratio 例如 100 代表 1:100 (圖上 1cm = 實際 100cm)
-      // 想讓 svg 1 unit = 1 real cm,要把目前底圖的「render 比例」校到對齊
-      // 我們無從直接知道目前 1 svg unit 在 baseLayer 是多大,所以假設使用者輸入完
-      // 後再用 two-point 微調。這裡先單純乘上 ratio。
-      multiplier = ratio
+      // ratio = 1:X,代表 svg 1 單位 = ratio 真實 cm (假設底圖已是 1mm:1unit 之類)
+      factor = Number(ratio)
+    } else if (method === 'ai') {
+      if (!svgPx || !realCm) return
+      factor = realCm / svgPx
     }
-    const newScale = Math.max(0.01, Math.min(100, t.scale * multiplier))
+    if (!isFinite(factor) || factor <= 0) return
+
     set(state => ({
       plan: {
         ...state.plan,
-        baseLayer: {
+        svgUnitToRealCm: factor,  // 1 svg unit = factor 真實 cm
+        baseLayer: bl ? {
           ...bl,
-          transform: { ...t, scale: newScale },
-          scaleCalibration: { method, svgPx, realCm, ratio, multiplier, calibratedAt: Date.now(), note }
-        }
+          scaleCalibration: { method, svgPx, realCm, ratio, factor, calibratedAt: Date.now(), note }
+        } : bl
       }
     }))
     get().save()

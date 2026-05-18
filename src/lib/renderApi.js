@@ -10,6 +10,35 @@ export const renderReady = Boolean(API_KEY)
 
 const ai = API_KEY ? new GoogleGenAI({ apiKey: API_KEY }) : null
 
+/**
+ * 統一友善錯誤包裝
+ */
+function friendlyError(e) {
+  const raw = (e?.message || String(e))
+  // Quota 429
+  if (/429|quota|RESOURCE_EXHAUSTED/i.test(raw)) {
+    // 嘗試抽出 retryDelay 秒數
+    const m = raw.match(/retry\s*[Dd]elay[":\s]*['"]?(\d+)s/) ||
+              raw.match(/retry in (\d+)s/i) ||
+              raw.match(/(\d+)s/)
+    const retryHint = m ? `(請等約 ${m[1]} 秒後再試,或明天再來)` : '(可能要等幾分鐘到一天才會 reset)'
+    return new Error(
+      `⚠ Google 免費 quota 用完了 ${retryHint}\n\n` +
+      `解決方案:\n` +
+      `1. 等 Google 配額重置 (每分鐘/每日 reset)\n` +
+      `2. 到 https://aistudio.google.com 升級為付費 tier ($)\n` +
+      `3. 或換成其他 image API (我們之後可接 fal.ai / OpenAI)`
+    )
+  }
+  if (/API key/i.test(raw)) {
+    return new Error('Gemini API Key 無效,請確認 .env 設定。')
+  }
+  if (/safety|SAFETY|blocked/i.test(raw)) {
+    return new Error('Gemini 認為這個 prompt 違反安全規則被擋住,請改個描述試試。')
+  }
+  return new Error('渲染失敗:' + raw.slice(0, 200))
+}
+
 // 風格預設
 const STYLE_PRESETS = [
   { id: 'modern',       label: '現代簡約',  prompt: 'modern minimalist interior, clean lines, neutral palette, soft natural light, photorealistic, 4k' },
@@ -32,21 +61,21 @@ export async function generateRender({ prompt, style = 'modern' }) {
   const stylePrompt = STYLE_PRESETS.find(s => s.id === style)?.prompt || ''
   const fullPrompt = [prompt, stylePrompt].filter(Boolean).join(', ')
 
-  const response = await ai.models.generateImages({
-    model: 'imagen-4.0-generate-001',
-    prompt: fullPrompt,
-    config: {
-      numberOfImages: 1,
-      aspectRatio: '16:9',  // 室內渲染橫向比較好看
-      personGeneration: 'dont_allow'  // 不出現人,純空間
-    }
-  })
-
-  const images = response.generatedImages
-  if (!images?.length) throw new Error('Gemini 沒回圖片')
-  const imgBytes = images[0].image.imageBytes
-  // imgBytes 是 base64,組成 data URL
-  return `data:image/png;base64,${imgBytes}`
+  try {
+    const response = await ai.models.generateImages({
+      model: 'imagen-4.0-generate-001',
+      prompt: fullPrompt,
+      config: {
+        numberOfImages: 1,
+        aspectRatio: '16:9',
+        personGeneration: 'dont_allow'
+      }
+    })
+    const images = response.generatedImages
+    if (!images?.length) throw new Error('Gemini 沒回圖片')
+    const imgBytes = images[0].image.imageBytes
+    return `data:image/png;base64,${imgBytes}`
+  } catch (e) { throw friendlyError(e) }
 }
 
 /**
@@ -88,20 +117,21 @@ export async function renderFromPlan({ planImageDataUrl, plan, style = 'modern',
   if (!match) throw new Error('平面圖格式不對')
   const mimeType = match[1], imageBase64 = match[2]
 
-  const response = await ai.models.generateContent({
-    model: 'gemini-2.5-flash-image',
-    contents: [
-      { inlineData: { data: imageBase64, mimeType } },
-      { text: fullPrompt }
-    ]
-  })
-
-  for (const part of response.candidates?.[0]?.content?.parts || []) {
-    if (part.inlineData) {
-      return `data:${part.inlineData.mimeType || 'image/png'};base64,${part.inlineData.data}`
+  try {
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-flash-image',
+      contents: [
+        { inlineData: { data: imageBase64, mimeType } },
+        { text: fullPrompt }
+      ]
+    })
+    for (const part of response.candidates?.[0]?.content?.parts || []) {
+      if (part.inlineData) {
+        return `data:${part.inlineData.mimeType || 'image/png'};base64,${part.inlineData.data}`
+      }
     }
-  }
-  throw new Error('Gemini 沒回圖片')
+    throw new Error('Gemini 沒回圖片')
+  } catch (e) { throw friendlyError(e) }
 }
 
 /**
@@ -127,19 +157,19 @@ export async function editRender({ imageUrl, editPrompt }) {
     imageBase64 = btoa(bin)
   }
 
-  const response = await ai.models.generateContent({
-    model: 'gemini-2.5-flash-image',
-    contents: [
-      { inlineData: { data: imageBase64, mimeType } },
-      { text: editPrompt }
-    ]
-  })
-
-  // 找到回應裡的圖片
-  for (const part of response.candidates?.[0]?.content?.parts || []) {
-    if (part.inlineData) {
-      return `data:${part.inlineData.mimeType || 'image/png'};base64,${part.inlineData.data}`
+  try {
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-flash-image',
+      contents: [
+        { inlineData: { data: imageBase64, mimeType } },
+        { text: editPrompt }
+      ]
+    })
+    for (const part of response.candidates?.[0]?.content?.parts || []) {
+      if (part.inlineData) {
+        return `data:${part.inlineData.mimeType || 'image/png'};base64,${part.inlineData.data}`
+      }
     }
-  }
-  throw new Error('Gemini 沒回編輯後的圖片')
+    throw new Error('Gemini 沒回編輯後的圖片')
+  } catch (e) { throw friendlyError(e) }
 }

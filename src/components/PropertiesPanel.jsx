@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { usePlanStore } from '../store/planStore.js'
 import { roomTemplates } from '../lib/constraints.js'
 
@@ -23,6 +24,7 @@ export default function PropertiesPanel() {
   const plan = usePlanStore(s => s.plan)
   const selectedId = usePlanStore(s => s.selectedId)
   const setSelected = usePlanStore(s => s.setSelected)
+  const [collapsed, setCollapsed] = useState(false)
   const updateSpace = usePlanStore(s => s.updateSpace)
   const updateWall = usePlanStore(s => s.updateWall)
   const updateDoor = usePlanStore(s => s.updateDoor)
@@ -41,17 +43,31 @@ export default function PropertiesPanel() {
 
   if (!space && !wall && !door && !win) return null
 
+  const title = space ? '🏠 空間屬性' : wall ? '🧱 牆屬性' : door ? '🚪 門屬性' : '🪟 窗屬性'
+
+  // 摺疊狀態:只顯示一個小條,點開展開
+  if (collapsed) {
+    return (
+      <div className="absolute top-3 left-1/2 -translate-x-1/2 bg-white border rounded-full shadow-md px-3 py-1 z-20 flex items-center gap-2 text-xs">
+        <button onClick={() => setCollapsed(false)}
+                className="hover:text-brand-700">▾ {title}</button>
+        <button onClick={() => setSelected(null)}
+                className="text-slate-400 hover:text-slate-800">✕</button>
+      </div>
+    )
+  }
+
+  // 完整面板:放右上,寬 256
   return (
     <div className="absolute top-3 right-3 w-64 bg-white border rounded-lg shadow-lg text-xs p-3 space-y-2 z-20">
       <div className="flex items-center justify-between">
-        <span className="font-semibold">
-          {space && '🏠 空間屬性'}
-          {wall && '🧱 牆屬性'}
-          {door && '🚪 門屬性'}
-          {win && '🪟 窗屬性'}
-        </span>
-        <button onClick={() => setSelected(null)}
-                className="text-slate-400 hover:text-slate-800">✕</button>
+        <span className="font-semibold">{title}</span>
+        <div className="flex items-center gap-1">
+          <button onClick={() => setCollapsed(true)} title="摺疊"
+                  className="text-slate-400 hover:text-slate-800">▴</button>
+          <button onClick={() => setSelected(null)} title="關閉"
+                  className="text-slate-400 hover:text-slate-800">✕</button>
+        </div>
       </div>
 
       {space && (
@@ -79,6 +95,43 @@ export default function PropertiesPanel() {
 }
 
 function SpaceForm({ space, onChange, onRemove }) {
+  const plan = usePlanStore(s => s.plan)
+  const f = plan?.svgUnitToRealCm || 1
+  // 從 vertices 算 bounding box 寬高 (svg unit) → 真實 cm
+  const vs = space.vertices?.length >= 3 ? space.vertices : [
+    { x: space.x ?? 0, y: space.y ?? 0 },
+    { x: (space.x ?? 0) + (space.w ?? 0), y: space.y ?? 0 },
+    { x: (space.x ?? 0) + (space.w ?? 0), y: (space.y ?? 0) + (space.h ?? 0) },
+    { x: space.x ?? 0, y: (space.y ?? 0) + (space.h ?? 0) }
+  ]
+  const xs = vs.map(v => v.x), ys = vs.map(v => v.y)
+  const minX = Math.min(...xs), maxX = Math.max(...xs)
+  const minY = Math.min(...ys), maxY = Math.max(...ys)
+  const widthCm = (maxX - minX) * f
+  const heightCm = (maxY - minY) * f
+  // 計算面積
+  let area = 0
+  for (let i = 0; i < vs.length; i++) {
+    const a = vs[i], b = vs[(i + 1) % vs.length]
+    area += a.x * b.y - b.x * a.y
+  }
+  area = Math.abs(area / 2) * f * f  // cm²
+  const ping = (area / 33057.85).toFixed(2)
+  const m2 = (area / 10000).toFixed(2)
+
+  function setDimensions(newWidthCm, newHeightCm) {
+    // 等比把多邊形縮放到新尺寸
+    const newWidthSvg = newWidthCm / f
+    const newHeightSvg = newHeightCm / f
+    const scaleX = (maxX - minX) > 0 ? newWidthSvg / (maxX - minX) : 1
+    const scaleY = (maxY - minY) > 0 ? newHeightSvg / (maxY - minY) : 1
+    const newVs = vs.map(v => ({
+      x: Math.round(minX + (v.x - minX) * scaleX),
+      y: Math.round(minY + (v.y - minY) * scaleY)
+    }))
+    onChange({ vertices: newVs, x: undefined, y: undefined, w: undefined, h: undefined })
+  }
+
   return (<>
     <Field label="名稱">
       <input value={space.name || ''}
@@ -95,6 +148,23 @@ function SpaceForm({ space, onChange, onRemove }) {
         {SPACE_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
       </select>
     </Field>
+    {/* 尺寸輸入 */}
+    <div className="grid grid-cols-2 gap-1">
+      <Field label="寬 (cm)">
+        <input type="number" min="1" value={Math.round(widthCm)}
+               onChange={e => setDimensions(Number(e.target.value), heightCm)}
+               className="w-full border rounded px-1.5 py-1" />
+      </Field>
+      <Field label="長 (cm)">
+        <input type="number" min="1" value={Math.round(heightCm)}
+               onChange={e => setDimensions(widthCm, Number(e.target.value))}
+               className="w-full border rounded px-1.5 py-1" />
+      </Field>
+    </div>
+    <div className="text-[10px] text-slate-500 -mt-1">
+      面積:{m2} m² · <b>{ping} 坪</b>
+      {vs.length > 4 && <span className="ml-1 text-amber-600">(多邊形,改尺寸為等比縮放)</span>}
+    </div>
     <Field label="顏色">
       <input type="color" value={space.color || '#e2e8f0'}
              onChange={e => onChange({ color: e.target.value })}

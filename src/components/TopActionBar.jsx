@@ -40,8 +40,8 @@ export default function TopActionBar() {
   }
 
   function clearAll() {
-    if (!confirm('清空畫布上所有牆/門/窗/空間/家具?(底圖、結構柱、樓層保留)')) return
-    setPlan({ ...plan, walls: [], doors: [], windows: [], spaces: [], rooms: [], furniture: [] })
+    if (!confirm('清空畫布上所有牆/門/窗/空間/家具/結構柱?(底圖與樓層保留)')) return
+    setPlan({ ...plan, walls: [], doors: [], windows: [], spaces: [], rooms: [], furniture: [], structuralColumns: [] })
   }
 
   return (

@@ -21,6 +21,10 @@ export function emptyPlan() {
     // 上傳的底圖 (DXF/PDF/圖片)
     baseLayer: null,
 
+    // 比例尺校準:1 svg 單位 = svgUnitToRealCm 真實 cm
+    // 預設 1 (代表 1 svg unit = 1 cm,跟舊版相容)
+    svgUnitToRealCm: 1,
+
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     // CAD 級一級物件 (Sprint 1 新增,取代純色塊)
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -356,4 +360,26 @@ export function newId(prefix='id') {
 // 1 坪 ≈ 3.305785 m² = 33057.85 cm²。回傳兩位小數。
 export function toPing(wCm, hCm) {
   return Math.round((wCm * hCm) / 33057.85 * 100) / 100
+}
+
+/**
+ * 把 svg 單位轉成真實 cm (套用比例尺校準)
+ */
+export function svgToRealCm(svgUnit, plan) {
+  const f = plan?.svgUnitToRealCm || 1
+  return svgUnit * f
+}
+
+/**
+ * 計算多邊形真實面積 (m² 與 坪),考慮比例尺校準
+ */
+export function polygonRealArea(vertices, plan) {
+  const f = plan?.svgUnitToRealCm || 1
+  const areaSvgUnit2 = polygonArea(vertices)
+  const areaRealCm2 = areaSvgUnit2 * f * f
+  return {
+    cm2: areaRealCm2,
+    m2: (areaRealCm2 / 10000).toFixed(2),
+    ping: (areaRealCm2 / 33057.85).toFixed(2)
+  }
 }

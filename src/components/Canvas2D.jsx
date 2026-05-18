@@ -15,12 +15,21 @@ function pointToSegmentDistance(p, seg) {
   const x = x1 + t * dx, y = y1 + t * dy
   return { dist: Math.hypot(p.x - x, p.y - y), t }
 }
-// 按角度吸附:如果第二點接近水平/垂直 ±10°,鎖死成水平或垂直
-function snapToOrtho(p1, p2, enable) {
-  if (!enable) return p2
+/**
+ * 按角度吸附:
+ *  - force=true (按 Shift):強制鎖死水平或垂直 (取較大軸)
+ *  - force=false:接近 ±10° 才自動吸附
+ */
+function snapToOrtho(p1, p2, force) {
   const dx = p2.x - p1.x, dy = p2.y - p1.y
-  if (Math.abs(dx) > Math.abs(dy) * 3) return { x: p2.x, y: p1.y }  // 水平
-  if (Math.abs(dy) > Math.abs(dx) * 3) return { x: p1.x, y: p2.y }  // 垂直
+  if (force) {
+    // 按 Shift:強制鎖正交
+    if (Math.abs(dx) >= Math.abs(dy)) return { x: p2.x, y: p1.y }
+    return { x: p1.x, y: p2.y }
+  }
+  // 沒按 Shift:接近 ±10° 才自動吸附 (避免完全水平/垂直的小抖動)
+  if (Math.abs(dx) > Math.abs(dy) * 5.7) return { x: p2.x, y: p1.y }  // 水平
+  if (Math.abs(dy) > Math.abs(dx) * 5.7) return { x: p1.x, y: p2.y }  // 垂直
   return p2
 }
 
@@ -88,6 +97,10 @@ export default function Canvas2D() {
   const removeDoor = usePlanStore(s => s.removeDoor)
   const removeWindow = usePlanStore(s => s.removeWindow)
   const removeSpace = usePlanStore(s => s.removeSpace)
+  const selectedIds = usePlanStore(s => s.selectedIds) || []
+  const setSelectedIds = usePlanStore(s => s.setSelectedIds)
+  const clipboard = usePlanStore(s => s.clipboard)
+  const setClipboard = usePlanStore(s => s.setClipboard)
   const selectedId = usePlanStore(s => s.selectedId)
   const setSelected = usePlanStore(s => s.setSelected)
   const calibMode = usePlanStore(s => s.calibMode)
@@ -117,8 +130,15 @@ export default function Canvas2D() {
   const dragRef = useRef(null)  // { kind, id, offsetX, offsetY, mode:'move'|'resize' }
   const setBaseLayer = usePlanStore(s => s.setBaseLayer)
   const [mouseSvg, setMouseSvg] = useState(null)  // 滑鼠目前 SVG 座標 (給工具預覽用)
+  const [shiftHeld, setShiftHeld] = useState(false)
 
-  const [zoom, setZoom] = useState(0.15)  // 1cm = 0.15px on screen by default
+  const setCanvasZoom = usePlanStore(s => s.setCanvasZoom)
+  const [zoom, _setZoom] = useState(0.15)
+  function setZoom(v) {
+    const z = typeof v === 'function' ? v(zoom) : v
+    _setZoom(z)
+    setCanvasZoom(z)
+  }
   const svgW = plan.bounds.w
   const svgH = plan.bounds.h
 
@@ -181,11 +201,52 @@ export default function Canvas2D() {
       if (e.shiftKey) redo(); else undo()
       return
     }
+    // Cmd+C 複製選取空間
+    if (mod && e.key.toLowerCase() === 'c') {
+      e.preventDefault()
+      const ids = selectedIds.length ? selectedIds : (selectedId ? [selectedId] : [])
+      const items = (plan.spaces || []).filter(sp => ids.includes(sp.id))
+      if (items.length) {
+        setClipboard({ type: 'spaces', items: JSON.parse(JSON.stringify(items)) })
+      }
+      return
+    }
+    // Cmd+V 貼上 (偏移 100,100)
+    if (mod && e.key.toLowerCase() === 'v' && clipboard?.items?.length) {
+      e.preventDefault()
+      const newIds = []
+      for (const item of clipboard.items) {
+        const vs = spaceVertices(item)
+        const newVs = vs.map(v => ({ x: v.x + 100, y: v.y + 100 }))
+        const newId = addSpace({
+          name: (item.name || '空間') + ' (副本)',
+          type: item.type,
+          color: item.color,
+          height: item.height,
+          wallKind: item.wallKind,
+          wallThickness: item.wallThickness,
+          vertices: newVs
+        })
+        if (newId) newIds.push(newId)
+      }
+      setSelectedIds(newIds)
+      setSelected(null)
+      return
+    }
+    // Cmd+A 全選空間
+    if (mod && e.key.toLowerCase() === 'a') {
+      e.preventDefault()
+      const all = (plan.spaces || []).map(sp => sp.id)
+      setSelectedIds(all)
+      setSelected(null)
+      return
+    }
     if (e.key === 'Escape') {
       setEditMode('select')
       setPendingWallStart(null)
       clearMeasurePoints()
       setSelected(null)
+      setSelectedIds([])
       return
     }
     // 模式快捷鍵
@@ -198,16 +259,20 @@ export default function Canvas2D() {
       if (k === 'r') return setEditMode('add-space')
       if (k === 'm') return setEditMode('measure')
     }
-    // 刪除
-    if (!selectedId) return
+    // 刪除 (支援多選)
     if (e.key === 'Delete' || e.key === 'Backspace') {
-      if ((plan.walls   || []).find(w => w.id === selectedId)) removeWall(selectedId)
-      else if ((plan.doors   || []).find(d => d.id === selectedId)) removeDoor(selectedId)
-      else if ((plan.windows || []).find(w => w.id === selectedId)) removeWindow(selectedId)
-      else if ((plan.spaces  || []).find(s => s.id === selectedId)) removeSpace(selectedId)
-      else if (plan.rooms.find(r => r.id === selectedId)) removeRoom(selectedId)
-      else if (plan.furniture.find(f => f.id === selectedId)) removeFurniture(selectedId)
+      const toDelete = selectedIds.length ? selectedIds : (selectedId ? [selectedId] : [])
+      if (!toDelete.length) return
+      for (const id of toDelete) {
+        if ((plan.walls   || []).find(w => w.id === id)) removeWall(id)
+        else if ((plan.doors   || []).find(d => d.id === id)) removeDoor(id)
+        else if ((plan.windows || []).find(w => w.id === id)) removeWindow(id)
+        else if ((plan.spaces  || []).find(s => s.id === id)) removeSpace(id)
+        else if (plan.rooms.find(r => r.id === id)) removeRoom(id)
+        else if (plan.furniture.find(f => f.id === id)) removeFurniture(id)
+      }
       setSelected(null)
+      setSelectedIds([])
     }
   }
 
@@ -239,8 +304,8 @@ export default function Canvas2D() {
       if (!pendingWallStart) {
         setPendingWallStart({ x: Math.round(p.x), y: Math.round(p.y) })
       } else {
-        // 第二點:正交吸附 (按住 Shift 才強制斜)
-        const snap = snapToOrtho(pendingWallStart, p, !e.shiftKey)
+        // 按 Shift = 強制正交;沒按 = 接近正交才自動吸
+        const snap = snapToOrtho(pendingWallStart, p, e.shiftKey)
         addWall({ x1: pendingWallStart.x, y1: pendingWallStart.y, x2: Math.round(snap.x), y2: Math.round(snap.y) })
         setPendingWallStart(null)
       }
@@ -270,7 +335,7 @@ export default function Canvas2D() {
   return (
     <div className="relative h-full overflow-auto bg-slate-100 p-4"
          tabIndex={0} onKeyDown={onKey} onWheel={onWheel}>
-      <MapOverlay zoom={zoom} svgW={svgW} svgH={svgH} />
+      <MapOverlay zoom={zoom} svgW={svgW} svgH={svgH} svgUnitToRealCm={plan.svgUnitToRealCm || 1} />
       <div className="absolute top-2 right-4 z-10 bg-white rounded shadow px-2 py-1 flex gap-2 text-xs items-center">
         <button onClick={() => setZoom(z => Math.max(0.05, z - 0.03))} className="px-2">−</button>
         <span>{Math.round(zoom * 100)}%</span>
@@ -281,7 +346,7 @@ export default function Canvas2D() {
            style={{ width: cssW, height: cssH, background: 'white',
              cursor: calibMode || editMode !== 'select' ? 'crosshair' : 'default' }}
            onMouseDown={onCanvasMouseDown}
-           onMouseMove={(e) => { setMouseSvg(clientToSvg(e)) }}>
+           onMouseMove={(e) => { setMouseSvg(clientToSvg(e)); setShiftHeld(e.shiftKey) }}>
         {/* 底圖 (DXF/PDF/圖片) — 放在最底層 */}
         <BaseLayerRender baseLayer={plan.baseLayer} svgW={svgW} svgH={svgH} />
 
@@ -342,7 +407,7 @@ export default function Canvas2D() {
 
         {/* 加牆預覽:第一點已點,第二點跟著滑鼠 */}
         {editMode === 'add-wall' && pendingWallStart && mouseSvg && (() => {
-          const snap = snapToOrtho(pendingWallStart, mouseSvg, true)
+          const snap = snapToOrtho(pendingWallStart, mouseSvg, shiftHeld)
           const len = Math.hypot(snap.x - pendingWallStart.x, snap.y - pendingWallStart.y)
           return (
             <g opacity={0.7}>
@@ -351,7 +416,7 @@ export default function Canvas2D() {
               <text x={(pendingWallStart.x + snap.x) / 2 + 20}
                     y={(pendingWallStart.y + snap.y) / 2 - 20}
                     fontSize={28} fill="#1d4ed8" fontWeight="bold">
-                {(len / 100).toFixed(2)}m
+                {((len * (plan.svgUnitToRealCm || 1)) / 100).toFixed(2)}m
               </text>
             </g>
           )
@@ -389,7 +454,7 @@ export default function Canvas2D() {
                         stroke="#f59e0b" strokeWidth={4} strokeDasharray="16 8" />
                   <text x={(a.x + b.x) / 2 + 20} y={(a.y + b.y) / 2 - 20}
                         fontSize={32} fill="#d97706" fontWeight="bold">
-                    {(len / 100).toFixed(2)} m
+                    {((len * (plan.svgUnitToRealCm || 1)) / 100).toFixed(2)} m
                   </text>
                   {/* 釘住按鈕 */}
                   <g onMouseDown={(e) => { e.stopPropagation(); pinCurrentMeasure() }}

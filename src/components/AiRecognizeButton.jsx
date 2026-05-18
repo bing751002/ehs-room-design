@@ -72,12 +72,19 @@ export default function AiRecognizeButton() {
         ...plan, walls, doors, windows, spaces, structuralColumns,
         rooms: []  // 清掉舊色塊
       })
-      const confMsg = result.confidence != null
-        ? `\nAI 自評信心度:${Math.round(result.confidence * 100)}%`
-        : ''
-      const msg = `✅ AI 識別完成:${walls.length} 牆 / ${doors.length} 門 / ${windows.length} 窗 / ${spaces.length} 空間${confMsg}`
-      alert(msg + (result.scale_note ? `\n\n比例尺說明:${result.scale_note}` : '') +
-        '\n\n💡 提示:點任何空間可整個拖移,點選後可拖頂點調整形狀,雙擊邊中點加新頂點。')
+      const conf = result.confidence ?? 0
+      const lowConf = conf < 0.5
+      const tooManyCol = (result.structuralColumns || []).length > 30
+      let warning = ''
+      if (lowConf) warning += `\n\n⚠ AI 信心度只有 ${Math.round(conf*100)}%,結果可能不準。`
+      if (!result.is_floor_plan) warning += '\n\n⚠ AI 認為這不是標準平面圖,結果僅供參考。'
+      if (result.image_quality === 'poor') warning += '\n\n⚠ 圖像品質不佳,結果可能差。'
+      if (tooManyCol) warning += '\n\n⚠ 偵測到大量柱子,建議手動清掉多餘的。'
+
+      const msg = `✅ 識別完成:${walls.length} 牆 / ${doors.length} 門 / ${windows.length} 窗 / ${spaces.length} 空間 / ${structuralColumns.length || 0} 柱`
+      alert(msg + warning +
+        (result.scale_note ? `\n\n比例尺說明:${result.scale_note}` : '') +
+        '\n\n💡 點空間拖移,Shift+點多選,Cmd+C/V 複製貼上,選空間後拖橘色手柄縮放、拖藍色頂點改形狀。')
     } catch (e) {
       console.error(e)
       setErr(e.message || 'AI 辨識失敗')
@@ -87,8 +94,8 @@ export default function AiRecognizeButton() {
   }
 
   function clearAll() {
-    if (!confirm('清空所有牆/門/窗/空間?(底圖、家具、結構柱保留)')) return
-    setPlan({ ...plan, walls: [], doors: [], windows: [], spaces: [], rooms: [] })
+    if (!confirm('清空所有牆/門/窗/空間/結構柱?(底圖與家具保留)')) return
+    setPlan({ ...plan, walls: [], doors: [], windows: [], spaces: [], rooms: [], structuralColumns: [] })
   }
 
   const hasContent = (plan.walls?.length || plan.spaces?.length || plan.doors?.length || plan.windows?.length) > 0
