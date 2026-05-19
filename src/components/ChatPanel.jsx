@@ -7,6 +7,8 @@ import { listRules, rulesToPromptText } from '../lib/internalRules.js'
 import { loadChatHistory, appendChatMessage, clearChatHistory } from '../lib/chatHistory.js'
 import { createRoomTemplate } from '../lib/roomTemplates.js'
 import { spaceVertices } from '../lib/constraints.js'
+import { extractForAI } from '../lib/fileExtract.js'
+import { listRegulations, regsToPromptText } from '../lib/regulations.js'
 
 /**
  * 右側 AI 對話面板 — 仿 illoca 的 Agent 風格
@@ -31,6 +33,10 @@ export default function ChatPanel() {
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
+  // 等待送出的附檔 (使用者拖拉/點選後出現在輸入框上方)
+  const [pendingAttachments, setPendingAttachments] = useState([])  // [{ name, type, size, _data }]
+  const [extractingFile, setExtractingFile] = useState(null)
+  const fileInputRef = useRef(null)
   const scrollRef = useRef(null)
 
   useEffect(() => {
@@ -47,13 +53,40 @@ export default function ChatPanel() {
     return () => { cancelled = true }
   }, [planId])
 
-  async function send(text, opts = {}) {
-    if (!text.trim() || busy) return
+  async function onPickFiles(e) {
+    const files = Array.from(e.target.files || [])
+    if (!files.length) return
     setErr('')
-    const userMsg = { role: 'user', content: text, verbose: opts.verbose }
+    const newAtts = []
+    for (const file of files) {
+      setExtractingFile(file.name)
+      try {
+        const data = await extractForAI(file)
+        newAtts.push({ name: file.name, size: file.size, type: data.type, _data: data })
+      } catch (ex) {
+        setErr(`處理 ${file.name} 失敗: ${ex.message}`)
+      }
+    }
+    setExtractingFile(null)
+    setPendingAttachments(p => [...p, ...newAtts])
+    if (fileInputRef.current) fileInputRef.current.value = ''
+  }
+
+  function removeAttachment(idx) {
+    setPendingAttachments(p => p.filter((_, i) => i !== idx))
+  }
+
+  async function send(text, opts = {}) {
+    // 至少要有文字或附檔
+    if ((!text.trim() && pendingAttachments.length === 0) || busy) return
+    setErr('')
+    const userText = text.trim() || (pendingAttachments.length ? '請看附件,給我建議' : '')
+    const userMsg = { role: 'user', content: userText, verbose: opts.verbose }
     const newMessages = [...messages, userMsg]
     setMessages(newMessages)
     setInput('')
+    const sendingAttachments = pendingAttachments
+    setPendingAttachments([])
     setBusy(true)
     // 存 user 訊息到雲端 (背景,不阻塞)
     appendChatMessage(planId, userMsg).catch(e => console.warn(e))
@@ -68,6 +101,19 @@ export default function ChatPanel() {
         const rules = await listRules({ activeOnly: true })
         rulesContext = rulesToPromptText(rules)
       } catch (e) { console.warn('內部規則讀取失敗', e) }
+
+      // 法規庫:撈相關空間類型的法規
+      let regsContext = ''
+      try {
+        const lowered = text.toLowerCase()
+        const detected = []
+        const map = { '辦公':'office', '會議':'meeting', '茶水':'pantry', '健身':'gym', 'spa':'sauna',
+                      '三溫暖':'sauna', '淋浴':'shower', '更衣':'locker', '休息':'lounge',
+                      '酒店':'lounge', '客房':'lounge', '餐廳':'pantry', '電競':'gym', '診所':'meeting' }
+        for (const [k, v] of Object.entries(map)) if (lowered.includes(k)) detected.push(v)
+        const regs = await listRegulations({ activeOnly: true })
+        regsContext = regsToPromptText(regs, detected)
+      } catch (e) { console.warn('法規庫讀取失敗', e) }
 
       // 房間庫:把使用者自訂的房型塞進 prompt,AI 規劃時優先用這些
       let templatesContext = ''
@@ -106,7 +152,11 @@ export default function ChatPanel() {
 
       const reply = await chatWithClaude(
         newMessages.map(m => ({ role: m.role, content: m.content })),
-        { plan, baseLayerImageUrl, verbose: opts.verbose, casesContext, rulesContext, templatesContext }
+        {
+          plan, baseLayerImageUrl,
+          verbose: opts.verbose, casesContext, rulesContext, regsContext, templatesContext,
+          attachments: sendingAttachments.map(a => a._data)
+        }
       )
 
       const { text: cleanText, actions } = parsePlanActions(reply)
@@ -330,7 +380,26 @@ export default function ChatPanel() {
 
       {/* 輸入區 */}
       <div className="border-t p-2">
+        {/* 已附檔列表 */}
+        {pendingAttachments.length > 0 && (
+          <div className="flex gap-1 mb-1.5 flex-wrap">
+            {pendingAttachments.map((a, i) => (
+              <span key={i}
+                    className="inline-flex items-center gap-1 bg-emerald-50 border border-emerald-200 text-emerald-800 text-[10px] px-1.5 py-0.5 rounded">
+                {a.type === 'image' ? '🖼' : '📎'}
+                <span className="max-w-[120px] truncate" title={a.name}>{a.name}</span>
+                <button onClick={() => removeAttachment(i)} className="hover:text-red-600 ml-0.5">×</button>
+              </span>
+            ))}
+          </div>
+        )}
+        {extractingFile && (
+          <div className="text-[10px] text-amber-600 mb-1">⏳ 處理 {extractingFile}…</div>
+        )}
+
         <form onSubmit={e => { e.preventDefault(); send(input) }} className="flex gap-2">
+          <input ref={fileInputRef} type="file" multiple onChange={onPickFiles} className="hidden"
+                 accept=".pdf,.doc,.docx,.xls,.xlsx,.csv,.tsv,.ppt,.pptx,.txt,.md,.jpg,.jpeg,.png,.webp,.gif,.bmp" />
           <textarea
             value={input}
             onChange={e => setInput(e.target.value)}
@@ -341,16 +410,25 @@ export default function ChatPanel() {
             rows={2}
             className="flex-1 border rounded px-2 py-1.5 text-sm resize-none focus:outline-brand-700" />
           <div className="flex flex-col gap-1 self-end">
-            <button type="submit" disabled={busy || !input.trim()}
+            <button type="submit" disabled={busy || (!input.trim() && pendingAttachments.length === 0)}
                     className="px-3 py-1.5 rounded bg-brand-700 text-white text-sm hover:bg-brand-500 disabled:opacity-40">
               送出
             </button>
-            <button type="button" disabled={busy || !input.trim()}
-                    onClick={() => send(input, { verbose: true })}
-                    title="顯示 AI 完整推理 (Stage 1 + Stage 2)"
-                    className="px-2 py-1 rounded bg-slate-700 text-white text-[10px] hover:bg-slate-600 disabled:opacity-40">
-              📋 詳細規劃
-            </button>
+            <div className="flex gap-1">
+              <button type="button"
+                      onClick={() => fileInputRef.current?.click()}
+                      disabled={busy || extractingFile}
+                      title="附加檔案 (PDF/Word/Excel/PPT/圖片)"
+                      className="px-2 py-1 rounded bg-emerald-600 text-white text-[10px] hover:bg-emerald-500 disabled:opacity-40">
+                📎
+              </button>
+              <button type="button" disabled={busy || !input.trim()}
+                      onClick={() => send(input, { verbose: true })}
+                      title="顯示 AI 完整推理 (Stage 1 + Stage 2)"
+                      className="px-2 py-1 rounded bg-slate-700 text-white text-[10px] hover:bg-slate-600 disabled:opacity-40">
+                📋
+              </button>
+            </div>
           </div>
         </form>
         {plan.baseLayer && (

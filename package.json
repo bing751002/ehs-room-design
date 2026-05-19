@@ -16,11 +16,14 @@
     "@react-three/fiber": "^8.17.10",
     "@supabase/supabase-js": "^2.45.0",
     "dxf-parser": "^1.1.2",
+    "jszip": "^3.10.1",
+    "mammoth": "^1.12.0",
     "pdfjs-dist": "^5.7.284",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-router-dom": "^6.27.0",
     "three": "^0.169.0",
+    "xlsx": "^0.18.5",
     "zustand": "^4.5.5"
   },
   "devDependencies": {

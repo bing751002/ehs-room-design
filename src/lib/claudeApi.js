@@ -210,6 +210,7 @@ export async function chatWithClaude(messages, context = {}) {
     : bl ? '⚠ 尚未校準比例尺 — 坪數可能不準,規劃前要請使用者先校準!' : ''
   const casesContext = context.casesContext || ''
   const rulesContext = context.rulesContext || ''
+  const regsContext  = context.regsContext  || ''
   const templatesContext = context.templatesContext || ''
   const planContext = context.plan ? `
 # 目前畫布狀態
@@ -245,24 +246,42 @@ export async function chatWithClaude(messages, context = {}) {
 完成後再給出 plan-action JSON。
 ` : ''
 
-  // 如果有上傳底圖且最後一則是 user 訊息,把底圖當 image 一起送 (Claude Vision)
+  // 如果有上傳底圖 或 使用者附檔,組合成 user message 的 content array
   const finalMessages = [...messages]
-  if (context.baseLayerImageUrl && finalMessages.length > 0) {
+  if (finalMessages.length > 0) {
     const lastIdx = finalMessages.length - 1
     const last = finalMessages[lastIdx]
     if (last.role === 'user' && typeof last.content === 'string') {
-      // 把 image 接在文字後面
-      try {
-        const imgData = await fetchImageAsBase64(context.baseLayerImageUrl)
-        finalMessages[lastIdx] = {
-          role: 'user',
-          content: [
-            { type: 'image', source: { type: 'base64', media_type: imgData.mimeType, data: imgData.base64 } },
-            { type: 'text', text: last.content }
-          ]
+      const blocks = []
+
+      // 1. 底圖
+      if (context.baseLayerImageUrl) {
+        try {
+          const imgData = await fetchImageAsBase64(context.baseLayerImageUrl)
+          blocks.push({ type: 'image', source: { type: 'base64', media_type: imgData.mimeType, data: imgData.base64 } })
+        } catch (e) { console.warn('底圖載入失敗', e) }
+      }
+
+      // 2. 使用者附檔 (context.attachments = [{type:'image',base64,mimeType,fileName} | {type:'text',text,fileName}])
+      const attachmentSummary = []
+      for (const att of (context.attachments || [])) {
+        if (att.type === 'image') {
+          blocks.push({ type: 'image', source: { type: 'base64', media_type: att.mimeType, data: att.base64 } })
+          attachmentSummary.push(`[圖片附件:${att.fileName}]`)
+        } else if (att.type === 'text') {
+          // 文字內容直接塞進文字 block (限制長度避免爆 token)
+          const safe = (att.text || '').slice(0, 30000)
+          blocks.push({ type: 'text', text: `📎 附件「${att.fileName}」內容:\n\n${safe}\n\n---\n` })
+          attachmentSummary.push(`[文字附件:${att.fileName} (${safe.length} 字)]`)
         }
-      } catch (e) {
-        console.warn('底圖載入失敗,繼續用純文字對話', e)
+      }
+
+      // 3. 最後接使用者的文字
+      const userText = (attachmentSummary.length ? attachmentSummary.join(' ') + '\n\n' : '') + last.content
+      blocks.push({ type: 'text', text: userText })
+
+      if (blocks.length > 1) {
+        finalMessages[lastIdx] = { role: 'user', content: blocks }
       }
     }
   }
@@ -286,7 +305,7 @@ export async function chatWithClaude(messages, context = {}) {
     const resp = await client.messages.create({
       model: MODEL,
       max_tokens: MAX_TOKENS,
-      system: SYSTEM_PROMPT + rulesContext + templatesContext + planContext + casesContext + verboseInstr,
+      system: SYSTEM_PROMPT + regsContext + rulesContext + templatesContext + planContext + casesContext + verboseInstr,
       tools,
       messages: convoMessages
     })
