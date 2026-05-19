@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { listRoomTemplates, removeRoomTemplate, toggleFavorite } from '../lib/roomTemplates.js'
+import { supabase } from '../lib/supabase.js'
+import { getProfileMap, ownerLabel } from '../lib/profiles.js'
 
 /**
  * 獨立房間庫管理頁 — 顯示所有自訂房型,可批次管理
@@ -9,8 +11,14 @@ export default function RoomLibraryPage() {
   const [items, setItems] = useState([])
   const [loading, setLoading] = useState(true)
   const [tableMissing, setTableMissing] = useState(false)
+  const [profileMap, setProfileMap] = useState({})
+  const [currentUid, setCurrentUid] = useState(null)
 
-  useEffect(() => { reload() }, [])
+  useEffect(() => {
+    reload()
+    getProfileMap().then(setProfileMap)
+    supabase.auth.getUser().then(({ data }) => setCurrentUid(data?.user?.id))
+  }, [])
   async function reload() {
     setLoading(true)
     try {
@@ -59,6 +67,7 @@ export default function RoomLibraryPage() {
                   <th className="text-right p-2">尺寸 (cm)</th>
                   <th className="text-right p-2">坪數</th>
                   <th className="text-left p-2">來源</th>
+                  <th className="text-left p-2">加入者</th>
                   <th className="text-left p-2">最愛</th>
                   <th></th>
                 </tr>
@@ -81,14 +90,25 @@ export default function RoomLibraryPage() {
                     <td className="p-2 text-xs">
                       {t.source === 'ai_chat' ? '🤖 AI' : t.source === 'manual' ? '✋ 手動' : t.source}
                     </td>
+                    <td className="p-2 text-xs text-slate-500">
+                      👤 {ownerLabel(profileMap, t.owner, currentUid)}
+                    </td>
                     <td className="p-2">
-                      <button onClick={async () => { await toggleFavorite(t.id, t.is_favorite); reload() }}>
-                        {t.is_favorite ? '⭐' : '☆'}
-                      </button>
+                      {t.owner === currentUid ? (
+                        <button onClick={async () => { await toggleFavorite(t.id, t.is_favorite); reload() }}>
+                          {t.is_favorite ? '⭐' : '☆'}
+                        </button>
+                      ) : (
+                        <span>{t.is_favorite ? '⭐' : '☆'}</span>
+                      )}
                     </td>
                     <td className="p-2 text-right">
-                      <button onClick={() => onDelete(t)}
-                              className="text-red-500 text-xs hover:underline">刪除</button>
+                      {t.owner === currentUid ? (
+                        <button onClick={() => onDelete(t)}
+                                className="text-red-500 text-xs hover:underline">刪除</button>
+                      ) : (
+                        <span className="text-[10px] text-slate-400">(其他同事的)</span>
+                      )}
                     </td>
                   </tr>
                 ))}

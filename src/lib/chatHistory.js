@@ -23,7 +23,7 @@ export async function loadChatHistory(planId) {
     role: m.role,
     content: m.content,
     actions: m.actions,
-    verbose: m.verbose,
+    verbose: m.is_verbose,
     id: m.id,
     createdAt: m.created_at
   }))
@@ -39,7 +39,7 @@ export async function appendChatMessage(planId, msg) {
     role: msg.role,
     content: msg.content,
     actions: msg.actions || null,
-    verbose: !!msg.verbose
+    is_verbose: !!msg.verbose
   }).select().single()
   if (error) {
     if (error.code !== 'PGRST205' && !/chat_messages/i.test(error.message || '')) {

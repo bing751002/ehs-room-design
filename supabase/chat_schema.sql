@@ -9,7 +9,7 @@ create table if not exists chat_messages (
   role text not null check (role in ('user','assistant','system')),
   content text not null,
   actions jsonb,             -- AI 套用到畫布的 plan-action 陣列
-  verbose boolean default false,
+  is_verbose boolean default false,
   created_at timestamptz not null default now()
 );
 

@@ -12,8 +12,9 @@ export default function MapOverlay({ zoom, svgW, svgH, svgUnitToRealCm = 1 }) {
   const scalePx = (scaleCm / svgUnitToRealCm) * zoom
   const labelText = scaleCm >= 100 ? `${(scaleCm/100).toFixed(scaleCm >= 1000 ? 0 : 1)} m` : `${scaleCm} cm`
 
+  // 改成 inline 元件 (給其他容器當子元素用),不再自帶 absolute 定位
   return (
-    <div className="absolute top-2 right-16 z-10 pointer-events-none bg-white/85 px-2 py-0.5 rounded shadow-sm border text-[10px] font-mono flex items-center gap-1.5">
+    <div className="flex items-center gap-1.5 font-mono text-[10px]">
       <span className="text-slate-500">比例尺</span>
       <div className="border-l-2 border-r-2 border-b-2 border-slate-700 h-1.5"
            style={{ width: `${scalePx}px` }} />

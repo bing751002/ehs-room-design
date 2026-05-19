@@ -378,10 +378,11 @@ export default function Canvas2D() {
   return (
     <div className="relative h-full overflow-auto bg-slate-100 p-4"
          tabIndex={0} onKeyDown={onKey} onWheel={onWheel}>
-      <MapOverlay zoom={zoom} svgW={svgW} svgH={svgH} svgUnitToRealCm={plan.svgUnitToRealCm || 1} />
-      <div className="absolute top-2 right-4 z-10 bg-white rounded shadow px-2 py-1 flex gap-2 text-xs items-center">
+      <div className="absolute top-2 right-4 z-10 bg-white rounded shadow px-2 py-1 flex gap-3 text-xs items-center">
+        <MapOverlay zoom={zoom} svgW={svgW} svgH={svgH} svgUnitToRealCm={plan.svgUnitToRealCm || 1} />
+        <span className="w-px h-4 bg-slate-200" />
         <button onClick={() => setZoom(z => Math.max(0.05, z - 0.03))} className="px-2">−</button>
-        <span>{Math.round(zoom * 100)}%</span>
+        <span className="font-mono">{Math.round(zoom * 100)}%</span>
         <button onClick={() => setZoom(z => Math.min(0.6, z + 0.03))} className="px-2">+</button>
       </div>
       <svg ref={svgRef} className="canvas-svg"

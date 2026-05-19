@@ -4,6 +4,8 @@ import {
   listRules, createRule, updateRule, removeRule,
   uploadRuleAttachment, extractPdfText
 } from '../lib/internalRules.js'
+import { supabase } from '../lib/supabase.js'
+import { getProfileMap, ownerLabel } from '../lib/profiles.js'
 
 const CATEGORIES = ['消防','無障礙','品牌','業態','機電','其他']
 
@@ -11,9 +13,15 @@ export default function RulesPage() {
   const [rules, setRules] = useState([])
   const [loading, setLoading] = useState(true)
   const [showForm, setShowForm] = useState(false)
+  const [profileMap, setProfileMap] = useState({})
+  const [currentUid, setCurrentUid] = useState(null)
 
   const [tableMissing, setTableMissing] = useState(false)
-  useEffect(() => { reload() }, [])
+  useEffect(() => {
+    reload()
+    getProfileMap().then(setProfileMap)
+    supabase.auth.getUser().then(({ data }) => setCurrentUid(data?.user?.id))
+  }, [])
   async function reload() {
     setLoading(true)
     try {
@@ -73,10 +81,13 @@ export default function RulesPage() {
               <li key={r.id} className={`bg-white border rounded-lg p-4 ${!r.is_active && 'opacity-50'}`}>
                 <div className="flex items-start justify-between">
                   <div>
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 flex-wrap">
                       <h3 className="font-semibold">{r.title}</h3>
                       {r.category && <span className="bg-amber-100 px-1.5 py-0.5 rounded text-xs">{r.category}</span>}
                       <span className="text-xs text-slate-500">優先度 {r.priority}</span>
+                      <span className="text-[10px] text-slate-400">
+                        👤 {ownerLabel(profileMap, r.owner, currentUid)} 加
+                      </span>
                     </div>
                     <pre className="text-xs text-slate-700 mt-2 whitespace-pre-wrap line-clamp-4 max-w-3xl">{r.content}</pre>
                     {r.attachments?.length > 0 && (
@@ -89,12 +100,20 @@ export default function RulesPage() {
                     )}
                   </div>
                   <div className="flex flex-col gap-1 text-xs">
-                    <button onClick={() => toggleActive(r)}
-                            className={`px-2 py-1 rounded ${r.is_active ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-500'}`}>
-                      {r.is_active ? '✓ 啟用中' : '已停用'}
-                    </button>
-                    <button onClick={() => onDelete(r)}
-                            className="text-red-500 hover:underline">刪除</button>
+                    {r.owner === currentUid ? (
+                      <>
+                        <button onClick={() => toggleActive(r)}
+                                className={`px-2 py-1 rounded ${r.is_active ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-500'}`}>
+                          {r.is_active ? '✓ 啟用中' : '已停用'}
+                        </button>
+                        <button onClick={() => onDelete(r)}
+                                className="text-red-500 hover:underline">刪除</button>
+                      </>
+                    ) : (
+                      <span className={`px-2 py-1 rounded text-center ${r.is_active ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-500'}`}>
+                        {r.is_active ? '✓ 啟用中' : '已停用'}
+                      </span>
+                    )}
                   </div>
                 </div>
               </li>

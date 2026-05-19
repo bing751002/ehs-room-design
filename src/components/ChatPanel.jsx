@@ -90,9 +90,15 @@ export default function ChatPanel() {
                       '酒店':'lounge', '客房':'lounge', '餐廳':'pantry', '電競':'gym', '診所':'meeting' }
         for (const [k, v] of Object.entries(map)) if (lowered.includes(k)) detected.push(v)
         if (detected.length) {
-          const top = await searchSimilarCases({ spaceTypes: detected, topK: 3 })
+          const top = await searchSimilarCases({ spaceTypes: detected, topK: 5 })
           if (top.length) {
-            casesContext = '\n\n# 📚 相關歷史案例 (從東森案例庫檢索,作為設計依據參考):\n' +
+            casesContext = '\n\n# 📚 相關歷史案例 (從東森團隊累積案例庫檢索)\n' +
+              '> 每個案例都標註了「圖紙類型」與「時期」,使用時請注意:\n' +
+              '> - 🟢 **現行/已完工** 的案例 = 真實落地經驗,**最高權重**參考\n' +
+              '> - 🟡 **規劃中** 的案例 = 進行中,可借鑑\n' +
+              '> - ⚪ **歷史/已改建** 的案例 = 僅供「曾這樣做過」參考,**不要直接複製**\n' +
+              '> - 🔵 **純參考圖** = 網路靈感,**只當美感參考**不當實際依據\n' +
+              '> - 施工圖 > 完工圖 > 概念圖 > 純參考圖 (依嚴謹度排序)\n\n' +
                             top.map(x => caseToPromptText(x.case)).join('\n\n')
           }
         }

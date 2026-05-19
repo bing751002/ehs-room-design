@@ -72,7 +72,8 @@ export function rulesToPromptText(rules) {
   if (!rules?.length) return ''
   const sorted = [...rules].sort((a, b) => b.priority - a.priority)
   const lines = [
-    '\n\n# 🏢 東森內部規則 (優先於公規,規劃時必須遵守)',
+    '\n\n# 🏢 東森空間規劃實驗室 — 團隊累積規則 (Team-shared,優先於台灣公規,規劃時必須遵守)',
+    '> 這些是東森團隊成員陸續累積的內部規定,你應該把它們當成「東森設計部門的家規」',
     sorted.map(r => `## ${r.title}${r.category ? ` [${r.category}]` : ''} (優先度 ${r.priority})\n${r.content}`).join('\n\n---\n\n')
   ]
   return lines.join('\n')

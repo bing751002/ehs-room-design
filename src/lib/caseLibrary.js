@@ -74,13 +74,32 @@ export async function searchSimilarCases({ spaceTypes = [], tags = [], topK = 3 
   return scored
 }
 
-/** 把案例壓縮成 prompt 用文字 */
+/** 把案例壓縮成 prompt 用文字 — 含圖紙類型/時期供 AI 判斷分量 */
 export function caseToPromptText(c) {
-  const lines = [`▼ 過去案例:${c.title}`]
+  const docTypeLabel = {
+    'reference': '純參考圖 (網路/雜誌靈感)',
+    'inspiration': '設計參考',
+    'concept': '概念設計',
+    'construction': '施工圖 (實際施作)',
+    'as_built': '已完工圖 (東森案場記錄)',
+    'existing': '既有現況圖',
+    'demolition': '拆除圖'
+  }[c.doc_type]
+  const eraLabel = {
+    'current': '🟢 現行使用中',
+    'historical': '⚪ 歷史 (已過時/已改建,僅供回憶)',
+    'planned': '🟡 規劃中',
+    'reference': '🔵 純參考 (非東森案場)'
+  }[c.era]
+  const header = [c.title, docTypeLabel && `[${docTypeLabel}]`, eraLabel].filter(Boolean).join(' ')
+  const lines = [`▼ ${header}`]
+  if (c.project)             lines.push(`  📍 案場: ${c.project}${c.year ? ' ('+c.year+')' : ''}`)
   if (c.space_types?.length) lines.push(`  類型: ${c.space_types.join(', ')}`)
+  if (c.style_tags?.length)  lines.push(`  風格: ${c.style_tags.join(', ')}`)
   if (c.tags?.length)        lines.push(`  標籤: ${c.tags.join(', ')}`)
-  if (c.area_ping)           lines.push(`  坪數: ${c.area_ping} 坪`)
+  if (c.area_ping || c.size_m2) lines.push(`  坪數: ${c.area_ping || ((c.size_m2||0)/3.305785).toFixed(1)} 坪`)
   if (c.description)         lines.push(`  描述: ${c.description}`)
+  if (c.ai_summary)          lines.push(`  AI 摘要: ${c.ai_summary}`)
   if (c.boss_notes)          lines.push(`  老闆偏好/評論: ${c.boss_notes}`)
   if (c.what_worked)         lines.push(`  ✅ 成功點: ${c.what_worked}`)
   if (c.what_failed)         lines.push(`  ❌ 失敗點: ${c.what_failed}`)
