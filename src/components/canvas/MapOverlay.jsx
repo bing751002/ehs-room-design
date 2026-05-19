@@ -1,44 +1,23 @@
 /**
- * 畫布右上方向標 + 左下比例尺 (覆蓋在 Canvas2D 之上)
+ * 比例尺顯示 — 改放到畫布頂部右側,小型橫條,不擋到圖面
+ * 方向標移除 (建築平面圖通常自帶,且使用者反映用不到)
  */
 export default function MapOverlay({ zoom, svgW, svgH, svgUnitToRealCm = 1 }) {
-  // 比例尺 — 以螢幕像素計算,顯示對應的真實 cm/m
-  // zoom = 1 SVG 單位 = zoom px。 1 SVG 單位 = svgUnitToRealCm 真實 cm。
-  // 所以螢幕 px = svgUnit * zoom,而 svgUnit = realCm / svgUnitToRealCm
-  // 推出:螢幕 px = (realCm / svgUnitToRealCm) * zoom
-  // 反過來:realCm = screenPx * svgUnitToRealCm / zoom
-  const targetScreenPx = 120
+  const targetScreenPx = 100
   const realCm = targetScreenPx * svgUnitToRealCm / zoom
-  // 找接近的整數 m/cm
   const niceLengths = [10, 25, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
   let scaleCm = niceLengths.reduce((a, b) =>
     Math.abs(b - realCm) < Math.abs(a - realCm) ? b : a
   , niceLengths[0])
   const scalePx = (scaleCm / svgUnitToRealCm) * zoom
-
   const labelText = scaleCm >= 100 ? `${(scaleCm/100).toFixed(scaleCm >= 1000 ? 0 : 1)} m` : `${scaleCm} cm`
 
   return (
-    <>
-      {/* 方向標 — 右上 */}
-      <div className="absolute top-2 left-2 z-10 pointer-events-none">
-        <div className="bg-white/90 rounded-full w-12 h-12 shadow border flex items-center justify-center relative">
-          <svg viewBox="-20 -20 40 40" className="w-10 h-10">
-            <polygon points="0,-15 5,5 0,2 -5,5" fill="#dc2626" />
-            <polygon points="0,15 5,-5 0,-2 -5,-5" fill="#1f2937" />
-            <text x="0" y="-17" fontSize="6" fill="#dc2626" textAnchor="middle" fontWeight="bold">N</text>
-          </svg>
-        </div>
-      </div>
-
-      {/* 比例尺 — 左下 */}
-      <div className="absolute bottom-2 left-2 z-10 pointer-events-none bg-white/90 px-2 py-1 rounded shadow border text-[10px] font-mono">
-        <div className="flex items-end gap-1">
-          <div className="border-l-2 border-r-2 border-b-2 border-slate-800 h-2"
-               style={{ width: `${scalePx}px` }} />
-          <span className="font-bold leading-none">{labelText}</span>
-        </div>
-      </div>
-    </>
+    <div className="absolute top-2 right-16 z-10 pointer-events-none bg-white/85 px-2 py-0.5 rounded shadow-sm border text-[10px] font-mono flex items-center gap-1.5">
+      <span className="text-slate-500">比例尺</span>
+      <div className="border-l-2 border-r-2 border-b-2 border-slate-700 h-1.5"
+           style={{ width: `${scalePx}px` }} />
+      <span className="font-bold leading-none text-slate-800">{labelText}</span>
+    </div>
   )
 }
