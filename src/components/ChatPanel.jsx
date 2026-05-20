@@ -79,14 +79,15 @@ export default function ChatPanel() {
   async function send(text, opts = {}) {
     // 至少要有文字或附檔
     if ((!text.trim() && pendingAttachments.length === 0) || busy) return
-    setErr('')
-    const userText = text.trim() || (pendingAttachments.length ? '請看附件,給我建議' : '')
-    const userMsg = { role: 'user', content: userText, verbose: opts.verbose }
-    const newMessages = [...messages, userMsg]
-    setMessages(newMessages)
+    // 立刻清空輸入框跟附檔 (使用者體感)
     setInput('')
     const sendingAttachments = pendingAttachments
     setPendingAttachments([])
+    setErr('')
+    const userText = text.trim() || (sendingAttachments.length ? '請看附件,給我建議' : '')
+    const userMsg = { role: 'user', content: userText, verbose: opts.verbose }
+    const newMessages = [...messages, userMsg]
+    setMessages(newMessages)
     setBusy(true)
     // 存 user 訊息到雲端 (背景,不阻塞)
     appendChatMessage(planId, userMsg).catch(e => console.warn(e))
@@ -404,7 +405,12 @@ export default function ChatPanel() {
             value={input}
             onChange={e => setInput(e.target.value)}
             onKeyDown={e => {
-              if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(input) }
+              // 中文輸入法選字確認時不該觸發送出
+              if (e.nativeEvent.isComposing || e.keyCode === 229) return
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault()
+                send(input)
+              }
             }}
             placeholder="告訴我你要規劃什麼…(Shift+Enter 換行)"
             rows={2}

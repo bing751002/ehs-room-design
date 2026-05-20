@@ -112,6 +112,17 @@ const SYSTEM_PROMPT = `你是「東森空間規劃實驗室」資深室內設計
   (要其他類型,用 type='custom',name 自訂)
 - 對話用繁體中文,**簡潔像對同事**,不囉嗦不列清單除非必要。
 
+# 🎯 處理「調整大小/位置」的關鍵流程 (極重要!)
+當使用者說「太大」「太小」「往左」「再大一點」「縮成X坪」之類:
+1. **先看 # 目前畫布狀態 裡的 spaceList**,記下目標空間的 svg_w, svg_h, real_size
+2. **算出新的 svg 座標** (考慮 svgUnitToRealCm 校準係數)
+3. **輸出 update_space action 改 vertices** (不要只改文字!)
+4. **答覆前自己驗算**:「我把 X 從 svg_w=600 改成 svg_w=400,真實大小從 12 坪變 5.3 坪」
+5. 如果輸出的 plan-action 跟你嘴上講的不一致,你做錯了
+
+🚨 **常見錯誤**:你回答「會議室縮小」但 plan-action 用了一樣的 vertices → 圖沒變
+**修正**:輸出 vertices 時所有頂點都要按比例縮放,並且保持 anchor (左上角通常不變)
+
 # 輸出格式 (CAD 級平面圖) — 重要架構
 
 **「空間」就是「被牆圍起來的多邊形」**。你不應分別輸出 walls 跟 spaces:
@@ -212,14 +223,47 @@ export async function chatWithClaude(messages, context = {}) {
   const rulesContext = context.rulesContext || ''
   const regsContext  = context.regsContext  || ''
   const templatesContext = context.templatesContext || ''
+  // 把空間資料整理成 AI 看得懂的格式 (含真實 m² 跟坪)
+  const f = context.plan?.svgUnitToRealCm || 1
+  const spaceList = (context.plan?.spaces || []).map(sp => {
+    const vs = sp.vertices?.length >= 3 ? sp.vertices : [
+      { x: sp.x ?? 0, y: sp.y ?? 0 },
+      { x: (sp.x ?? 0) + (sp.w ?? 0), y: (sp.y ?? 0) + (sp.h ?? 0) }
+    ]
+    const xs = vs.map(v => v.x), ys = vs.map(v => v.y)
+    const minX = Math.min(...xs), maxX = Math.max(...xs)
+    const minY = Math.min(...ys), maxY = Math.max(...ys)
+    const wSvg = maxX - minX, hSvg = maxY - minY
+    // 真實尺寸 (考慮校準)
+    const wCm = wSvg * f, hCm = hSvg * f
+    const areaPing = (wCm * hCm / 33057.85).toFixed(2)
+    return {
+      id: sp.id, name: sp.name, type: sp.type,
+      // svg 座標 (給 plan-action 改用)
+      svg_x: minX, svg_y: minY, svg_w: Math.round(wSvg), svg_h: Math.round(hSvg),
+      // 真實尺寸 (給 AI 判斷大小)
+      real_size: `${wCm.toFixed(0)}×${hCm.toFixed(0)}cm = ${areaPing} 坪`,
+      vertices_count: vs.length
+    }
+  })
+  const calibInfo2 = context.plan?.svgUnitToRealCm
+    ? `已校準:1 svg unit = ${f} cm`
+    : '⚠ 未校準,svg 座標 = cm (請使用者先校準!)'
+
   const planContext = context.plan ? `
 # 目前畫布狀態
-- 樓層 bounds: ${context.plan.bounds.w}×${context.plan.bounds.h} cm
-- 可用區: x=${context.plan.availableZone.x}, y=${context.plan.availableZone.y}, w=${context.plan.availableZone.w}, h=${context.plan.availableZone.h}
+- 樓層 bounds: ${context.plan.bounds.w}×${context.plan.bounds.h} cm (svg 單位)
+- **比例尺校準**: ${calibInfo2}
 - 已有牆 (${(context.plan.walls   || []).length} 段)
 - 已有門 (${(context.plan.doors   || []).length} 個)
 - 已有窗 (${(context.plan.windows || []).length} 個)
-- 已標空間 (${(context.plan.spaces || []).length} 個): ${JSON.stringify((context.plan.spaces||[]).map(s => ({name:s.name, type:s.type, x:s.x, y:s.y, w:s.w, h:s.h})))}
+- 已標空間 (${spaceList.length} 個):
+${JSON.stringify(spaceList, null, 2)}
+
+⚠ **重要**:當使用者說「太大」「太小」「再大一點」,你要先看 real_size 判斷真實坪數,
+   再決定新的 svg_w/svg_h。改 plan-action 時用 svg 座標 (不是真實 cm)!
+   例如:目前 svg_w=600, real=12 坪,使用者說「縮一半」 → 新 svg_w=Math.round(600/√2)=424
+
 - legacy 色塊房間 (${context.plan.rooms.length} 間)
 - 已放家具 (${context.plan.furniture.length} 件)
 - 底圖: ${bl ? `${bl.type} (${bl.filename}) — ${calibInfo}` : '無'}
