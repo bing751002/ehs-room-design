@@ -332,3 +332,4 @@ function RegulationForm({ initial, onClose }) {
     </div>
   )
 }
+
