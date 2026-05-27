@@ -136,6 +136,10 @@ export default function Canvas2D() {
   const removePinnedMeasure = usePlanStore(s => s.removePinnedMeasure)
   const pendingWallStart = usePlanStore(s => s.pendingWallStart)
   const setPendingWallStart = usePlanStore(s => s.setPendingWallStart)
+  const pendingPolygon = usePlanStore(s => s.pendingPolygon) || []
+  const addPolygonVertex = usePlanStore(s => s.addPolygonVertex)
+  const popPolygonVertex = usePlanStore(s => s.popPolygonVertex)
+  const clearPolygon = usePlanStore(s => s.clearPolygon)
   const addWall = usePlanStore(s => s.addWall)
   const addDoor = usePlanStore(s => s.addDoor)
   const addWindow = usePlanStore(s => s.addWindow)
@@ -262,8 +266,21 @@ export default function Canvas2D() {
       setEditMode('select')
       setPendingWallStart(null)
       clearMeasurePoints()
+      clearPolygon()
       setSelected(null)
       setSelectedIds([])
+      return
+    }
+    // Enter 封閉多邊形
+    if (e.key === 'Enter' && editMode === 'add-polygon') {
+      e.preventDefault()
+      if (pendingPolygon.length >= 3) finishPolygon()
+      return
+    }
+    // 多邊形繪製中按 Backspace 退一個頂點
+    if ((e.key === 'Backspace' || e.key === 'Delete') && editMode === 'add-polygon' && pendingPolygon.length > 0) {
+      e.preventDefault()
+      popPolygonVertex()
       return
     }
     // 模式快捷鍵
@@ -274,6 +291,7 @@ export default function Canvas2D() {
       if (k === 'd') return setEditMode('add-door')
       if (k === 'n') return setEditMode('add-window')
       if (k === 'r') return setEditMode('add-space')
+      if (k === 'p') return setEditMode('add-polygon')
       if (k === 'c') return setEditMode('add-column')
       if (k === 'm') return setEditMode('measure')
     }
@@ -315,6 +333,21 @@ export default function Canvas2D() {
     return best
   }
 
+  function finishPolygon() {
+    const vs = usePlanStore.getState().pendingPolygon
+    if (vs.length < 3) return
+    addSpace({
+      name: '空間',
+      type: 'custom',
+      color: '#fef3c7',
+      wallKind: 'interior',
+      wallThickness: 12,
+      vertices: vs
+    })
+    clearPolygon()
+    setEditMode('select')
+  }
+
   function onCanvasMouseDown(e) {
     if (calibMode) {
       const p = clientToSvg(e)
@@ -353,6 +386,23 @@ export default function Canvas2D() {
       setEditMode('select')
       return
     }
+    if (editMode === 'add-polygon') {
+      // 多邊形:點一下加一個頂點。預設新邊接近水平/垂直時自動吸附正交,按 Shift 強制正交。
+      const last = pendingPolygon[pendingPolygon.length - 1]
+      const snapped = last ? snapToOrtho(last, p, e.shiftKey) : p
+      const vx = Math.round(snapped.x), vy = Math.round(snapped.y)
+      const first = pendingPolygon[0]
+      // 若已有 >= 3 個頂點,且本次點靠近第一個頂點 (15 svg unit 內),視為封閉
+      if (first && pendingPolygon.length >= 3) {
+        const d = Math.hypot(vx - first.x, vy - first.y)
+        if (d < 15) {
+          finishPolygon()
+          return
+        }
+      }
+      addPolygonVertex({ x: vx, y: vy })
+      return
+    }
     if (editMode === 'add-column') {
       // 點哪裡加一根 60×60 cm 柱子
       const size = 60
@@ -378,6 +428,12 @@ export default function Canvas2D() {
   return (
     <div className="relative h-full overflow-auto bg-slate-100 p-4"
          tabIndex={0} onKeyDown={onKey} onWheel={onWheel}>
+      {editMode === 'add-polygon' && (
+        <div className="absolute top-2 left-1/2 -translate-x-1/2 z-20 bg-brand-700 text-white rounded-full shadow-lg px-4 py-1.5 text-xs flex items-center gap-3">
+          <span className="font-semibold">⬡ 多邊形繪製中</span>
+          <span className="opacity-80">點圖加頂點 ({pendingPolygon.length} 個) · 接近水平/垂直會自動吸附 · 按 <b>Shift</b> 強制正交 · 雙擊或 Enter 封閉 · Backspace 撤銷 · Esc 取消</span>
+        </div>
+      )}
       <div className="absolute top-2 right-4 z-10 bg-white rounded shadow px-2 py-1 flex gap-3 text-xs items-center">
         <MapOverlay zoom={zoom} svgW={svgW} svgH={svgH} svgUnitToRealCm={plan.svgUnitToRealCm || 1} />
         <span className="w-px h-4 bg-slate-200" />
@@ -390,6 +446,12 @@ export default function Canvas2D() {
            style={{ width: cssW, height: cssH, background: 'white',
              cursor: calibMode || editMode !== 'select' ? 'crosshair' : 'default' }}
            onMouseDown={onCanvasMouseDown}
+           onDoubleClick={(e) => {
+             if (editMode === 'add-polygon' && pendingPolygon.length >= 3) {
+               e.preventDefault()
+               finishPolygon()
+             }
+           }}
            onMouseMove={(e) => { setMouseSvg(clientToSvg(e)); setShiftHeld(e.shiftKey) }}>
         {/* 底圖 (DXF/PDF/圖片) — 放在最底層 */}
         <BaseLayerRender baseLayer={plan.baseLayer} svgW={svgW} svgH={svgH} />
@@ -459,6 +521,70 @@ export default function Canvas2D() {
             )}
           </g>
         ))}
+
+        {/* 多邊形空間預覽:已點的頂點 + 預覽連線到滑鼠位置 (含正交吸附) */}
+        {editMode === 'add-polygon' && pendingPolygon.length > 0 && (() => {
+          const last = pendingPolygon[pendingPolygon.length - 1]
+          const first = pendingPolygon[0]
+          // 跟下點時同樣的吸附邏輯,讓預覽 = 實際會落點
+          const snapped = mouseSvg ? snapToOrtho(last, mouseSvg, shiftHeld) : null
+          const closeDist = snapped ? Math.hypot(snapped.x - first.x, snapped.y - first.y) : 999
+          const canClose = pendingPolygon.length >= 3 && closeDist < 15
+          // 判斷此邊是否正交 (給綠色高亮)
+          const isOrtho = snapped && (Math.abs(snapped.x - last.x) < 0.5 || Math.abs(snapped.y - last.y) < 0.5)
+          return (
+            <g pointerEvents="none">
+              {/* 已連起的多段線 */}
+              <polyline
+                points={pendingPolygon.map(v => `${v.x},${v.y}`).join(' ')}
+                fill="none" stroke="#3b82f6" strokeWidth={8} strokeDasharray="14 8"
+                opacity={0.85} />
+              {/* 預覽線 (到吸附後位置) */}
+              {snapped && (
+                <line x1={last.x} y1={last.y} x2={snapped.x} y2={snapped.y}
+                      stroke={isOrtho ? '#10b981' : '#f59e0b'} strokeWidth={6} strokeDasharray="14 8"
+                      opacity={canClose ? 0.4 : 0.9} />
+              )}
+              {/* 滑鼠十字記號 (顯示真正落點) */}
+              {snapped && (
+                <g opacity={0.9}>
+                  <circle cx={snapped.x} cy={snapped.y} r={10}
+                          fill="white" stroke={isOrtho ? '#10b981' : '#f59e0b'} strokeWidth={3} />
+                </g>
+              )}
+              {/* 封閉預覽 (從吸附點回第一點) — 只要有 ≥2 頂點就顯示 */}
+              {snapped && pendingPolygon.length >= 2 && (
+                <line x1={snapped.x} y1={snapped.y} x2={first.x} y2={first.y}
+                      stroke={canClose ? '#10b981' : '#94a3b8'}
+                      strokeWidth={canClose ? 8 : 4}
+                      strokeDasharray={canClose ? '0' : '10 8'}
+                      opacity={canClose ? 0.9 : 0.4} />
+              )}
+              {/* 頂點圓圈 */}
+              {pendingPolygon.map((v, i) => (
+                <circle key={i} cx={v.x} cy={v.y}
+                        r={i === 0 && canClose ? 24 : 14}
+                        fill={i === 0 && canClose ? '#10b981' : '#3b82f6'}
+                        stroke="white" strokeWidth={3} />
+              ))}
+              {/* 頂點編號 */}
+              {pendingPolygon.map((v, i) => (
+                <text key={`t${i}`} x={v.x + 20} y={v.y - 14} fontSize={28} fontWeight="bold"
+                      fill="#1e3a8a" stroke="white" strokeWidth={4} paintOrder="stroke">
+                  {i + 1}
+                </text>
+              ))}
+              {/* 提示 hint (在第一個頂點上方) */}
+              {canClose && (
+                <text x={first.x} y={first.y - 40} fontSize={26} fontWeight="bold"
+                      fill="#10b981" stroke="white" strokeWidth={6} paintOrder="stroke"
+                      textAnchor="middle">
+                  點此封閉 ✓
+                </text>
+              )}
+            </g>
+          )
+        })()}
 
         {/* 加牆預覽:第一點已點,第二點跟著滑鼠 */}
         {editMode === 'add-wall' && pendingWallStart && mouseSvg && (() => {

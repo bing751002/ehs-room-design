@@ -203,30 +203,122 @@ function WallForm({ wall, onChange, onRemove }) {
   </>)
 }
 
+// 門類型 → 預設寬度
+const DOOR_DEFAULT_WIDTH = { single: 90, double: 180, slide: 150 }
+
 function DoorForm({ door, onChange, onRemove }) {
+  const type = door.type || 'single'
+  const sw = door.swing || 'in-right'
+  // 拆解 swing 成兩個獨立可切的維度
+  const direction = sw.startsWith('in') ? 'in' : 'out'   // 向內/向外
+  const side = sw.endsWith('right') ? 'right' : 'left'   // 合葉在右/左
+  function setSwingParts(nextDir, nextSide) {
+    onChange({ swing: `${nextDir}-${nextSide}` })
+  }
+  function setType(nextType) {
+    // 切換類型時若 width 還是舊類型的預設,自動帶入新預設
+    const oldDefault = DOOR_DEFAULT_WIDTH[type]
+    const newDefault = DOOR_DEFAULT_WIDTH[nextType]
+    const patch = { type: nextType }
+    if (!door.width || door.width === oldDefault) patch.width = newDefault
+    onChange(patch)
+  }
+
   return (<>
+    <Field label="門類型">
+      <div className="grid grid-cols-3 gap-1">
+        {[
+          { v: 'single', label: '🚪 單開', w: 90 },
+          { v: 'double', label: '🚪🚪 雙開', w: 180 },
+          { v: 'slide',  label: '⇆ 推拉',  w: 150 }
+        ].map(o => (
+          <button key={o.v} type="button"
+                  onClick={() => setType(o.v)}
+                  className={`px-2 py-1 rounded border text-[11px] ${
+                    type === o.v ? 'bg-brand-700 text-white border-brand-700' : 'bg-white hover:bg-slate-100'
+                  }`}
+                  title={`預設寬 ${o.w}cm`}>
+            {o.label}
+          </button>
+        ))}
+      </div>
+    </Field>
+
     <Field label="寬度 (cm)">
-      <input type="number" value={door.width || 90}
-             onChange={e => onChange({ width: Number(e.target.value) })}
-             className="w-full border rounded px-1.5 py-1" />
+      <div className="flex gap-1">
+        <input type="number" value={door.width || DOOR_DEFAULT_WIDTH[type]}
+               onChange={e => onChange({ width: Number(e.target.value) })}
+               className="flex-1 border rounded px-1.5 py-1" />
+        <button type="button"
+                onClick={() => onChange({ width: DOOR_DEFAULT_WIDTH[type] })}
+                title="重設為預設寬度"
+                className="px-2 text-[11px] bg-slate-100 rounded hover:bg-slate-200">
+          ↺ {DOOR_DEFAULT_WIDTH[type]}
+        </button>
+      </div>
     </Field>
-    <Field label="開門方向">
-      <select value={door.swing || 'in-right'}
-              onChange={e => onChange({ swing: e.target.value })}
-              className="w-full border rounded px-1.5 py-1">
-        <option value="in-left">向內開 (左)</option>
-        <option value="in-right">向內開 (右)</option>
-        <option value="out-left">向外開 (左)</option>
-        <option value="out-right">向外開 (右)</option>
-      </select>
+
+    <Field label={type === 'slide' ? '滑入方向' : '開門方向'}>
+      <div className="space-y-1">
+        {/* 向內/向外切換 */}
+        <div className="grid grid-cols-2 gap-1">
+          <button type="button"
+                  onClick={() => setSwingParts('in', side)}
+                  className={`px-2 py-1 rounded border text-[11px] ${
+                    direction === 'in' ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white hover:bg-slate-100'
+                  }`}>
+            ↓ 向內
+          </button>
+          <button type="button"
+                  onClick={() => setSwingParts('out', side)}
+                  className={`px-2 py-1 rounded border text-[11px] ${
+                    direction === 'out' ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white hover:bg-slate-100'
+                  }`}>
+            ↑ 向外
+          </button>
+        </div>
+        {/* 左/右合葉 (雙開門隱藏,因為兩邊都有合葉) */}
+        {type !== 'double' && (
+          <div className="grid grid-cols-2 gap-1">
+            <button type="button"
+                    onClick={() => setSwingParts(direction, 'left')}
+                    className={`px-2 py-1 rounded border text-[11px] ${
+                      side === 'left' ? 'bg-amber-500 text-white border-amber-500' : 'bg-white hover:bg-slate-100'
+                    }`}>
+              ← {type === 'slide' ? '往左滑' : '左合葉'}
+            </button>
+            <button type="button"
+                    onClick={() => setSwingParts(direction, 'right')}
+                    className={`px-2 py-1 rounded border text-[11px] ${
+                      side === 'right' ? 'bg-amber-500 text-white border-amber-500' : 'bg-white hover:bg-slate-100'
+                    }`}>
+              {type === 'slide' ? '往右滑' : '右合葉'} →
+            </button>
+          </div>
+        )}
+        {/* 一鍵翻轉鈕 */}
+        <button type="button"
+                onClick={() => {
+                  // 翻轉:in↔out, left↔right 都翻
+                  const nd = direction === 'in' ? 'out' : 'in'
+                  const ns = side === 'left' ? 'right' : 'left'
+                  setSwingParts(nd, ns)
+                }}
+                className="w-full px-2 py-1 rounded border bg-slate-100 hover:bg-slate-200 text-[11px]">
+          🔄 整個翻轉 (試所有方向)
+        </button>
+      </div>
     </Field>
-    <Field label="位置 (沿牆 0-1)">
-      <input type="number" step="0.01" min="0" max="1"
+
+    <Field label="沿牆位置 (0-1)">
+      <input type="range" min="0" max="1" step="0.01"
              value={door.t ?? 0.5}
              onChange={e => onChange({ t: Number(e.target.value) })}
-             className="w-full border rounded px-1.5 py-1" />
+             className="w-full" />
+      <div className="text-[10px] text-slate-500 text-right">{((door.t ?? 0.5) * 100).toFixed(0)}%</div>
     </Field>
-    <div className="flex gap-1">
+
+    <div className="flex gap-2 pt-1">
       <label className="flex items-center gap-1 text-[11px]">
         <input type="checkbox" checked={!!door.isEntry}
                onChange={e => onChange({ isEntry: e.target.checked })} />

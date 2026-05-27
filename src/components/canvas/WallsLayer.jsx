@@ -11,6 +11,10 @@ import { usePlanStore } from '../../store/planStore.js'
  *  - 牆顏色:外牆 #1f2937,內牆 #475569,輕隔間 #94a3b8
  */
 export default function WallsLayer({ walls, doors, windows, selectedId, onSelect }) {
+  const plan = usePlanStore(s => s.plan)
+  // 共邊去重後的 isShared 標記:跳過不畫
+  const renderedWalls = walls.filter(w => !w.isShared)
+  // wallById 仍涵蓋全部 (包括 isShared),這樣門/窗依附在被共邊吃掉的 wallId 也能找到
   const wallById = Object.fromEntries(walls.map(w => [w.id, w]))
 
   // 把門/窗依附的牆「打洞」位置記下,渲染牆時要分段避開
@@ -26,9 +30,9 @@ export default function WallsLayer({ walls, doors, windows, selectedId, onSelect
 
   return (
     <g>
-      {/* 第一層:牆 (含被門窗打洞) */}
-      {walls.map(w => (
-        <WallSegments key={w.id} wall={w}
+      {/* 第一層:牆 (含被門窗打洞);跳過共邊重複 */}
+      {renderedWalls.map(w => (
+        <WallSegments key={w.id} wall={w} plan={plan}
                       openings={openingsByWall[w.id] || []}
                       selected={selectedId === w.id}
                       onSelect={onSelect} />
@@ -37,7 +41,7 @@ export default function WallsLayer({ walls, doors, windows, selectedId, onSelect
       {/* 第二層:門弧線 */}
       {doors.map(d => {
         const w = wallById[d.wallId]; if (!w) return null
-        return <DoorGlyph key={d.id} wall={w} door={d}
+        return <DoorGlyph key={d.id} wall={w} door={d} plan={plan}
                           selected={selectedId === d.id}
                           onSelect={onSelect} />
       })}
@@ -45,7 +49,7 @@ export default function WallsLayer({ walls, doors, windows, selectedId, onSelect
       {/* 第三層:窗線 */}
       {windows.map(win => {
         const w = wallById[win.wallId]; if (!w) return null
-        return <WindowGlyph key={win.id} wall={w} window={win}
+        return <WindowGlyph key={win.id} wall={w} window={win} plan={plan}
                             selected={selectedId === win.id}
                             onSelect={onSelect} />
       })}
@@ -66,16 +70,19 @@ function wallThickness(w) {
  * 一段牆 = 把整條牆 (x1,y1)→(x2,y2) 沿 t 排序門窗洞,
  * 切成多段 segments,每段獨立畫,洞處不畫。
  */
-function WallSegments({ wall, openings, selected, onSelect }) {
+function WallSegments({ wall, openings, selected, onSelect, plan }) {
   const len = wallLength(wall)
   if (len === 0) return null
   const th = wallThickness(wall)
   const color = selected ? '#3b82f6' : wallColor(wall)
+  const f = plan?.svgUnitToRealCm || 1
 
   // 計算每個 opening 的 t 範圍 [tStart, tEnd]
+  // op.width 是 cm,len 是 svg unit,要先換算
   const holes = []
   for (const op of openings) {
-    const halfW = op.width / 2
+    const widthSvg = (op.width || 0) / f
+    const halfW = widthSvg / 2
     const tS = Math.max(0, op.t - halfW / len)
     const tE = Math.min(1, op.t + halfW / len)
     holes.push([tS, tE])
@@ -160,48 +167,32 @@ function WallEndpointHandle({ wall, which }) {
 }
 
 /**
- * 門:在牆洞處畫弧線表達開門範圍,並用線段表達門板
- *  swing: in-left / in-right / out-left / out-right
+ * 門:依 door.type 畫成 single (單開) / double (雙開) / slide (推拉) 三種
+ *  swing: in-left / in-right / out-left / out-right (single/double 用)
  *  in=向內(房間裡),out=向外;left/right 代表合葉在牆段的左端或右端
+ *  推拉門 swing 只用 in-left/in-right 決定門片往哪邊滑入
  */
-function DoorGlyph({ wall, door, selected, onSelect }) {
-  const ends = openingEnds(wall, door)
+function DoorGlyph({ wall, door, selected, onSelect, plan }) {
+  const ends = openingEnds(wall, door, plan)
   if (!ends) return null
   const { p1, p2 } = ends
   const len = Math.sqrt((p2.x - p1.x) ** 2 + (p2.y - p1.y) ** 2)
   if (len === 0) return null
-  // 牆方向單位向量
   const ux = (p2.x - p1.x) / len, uy = (p2.y - p1.y) / len
-  // 法向量 (向左90°)
-  const nx = -uy, ny = ux
+  const nx = -uy, ny = ux   // 法向量 (向左 90°)
 
-  const swing = door.swing || 'in-right'
-  const hinge = swing.endsWith('right') ? p2 : p1
-  const tip   = swing.endsWith('right') ? p1 : p2
-  const inward = swing.startsWith('in') ? 1 : -1
-
-  // 門板末端: 從 hinge 沿法向量移動 len
-  const doorEnd = {
-    x: hinge.x + nx * inward * len,
-    y: hinge.y + ny * inward * len
-  }
-  // 弧的方向:從 tip 到 doorEnd
-  const sweep = swing.endsWith('right') ? (inward > 0 ? 0 : 1) : (inward > 0 ? 1 : 0)
-
+  const type = door.type || 'single'
   const color = selected ? '#3b82f6' : (door.isExit ? '#dc2626' : door.isEntry ? '#16a34a' : '#475569')
 
   return (
     <g onMouseDown={(e) => { e.stopPropagation(); onSelect?.(door.id, 'door') }}
        style={{ cursor: 'pointer' }}>
-      {/* 門板 */}
-      <line x1={hinge.x} y1={hinge.y} x2={doorEnd.x} y2={doorEnd.y}
-            stroke={color} strokeWidth={6} strokeLinecap="round" />
-      {/* 開門弧 */}
-      <path d={`M ${tip.x} ${tip.y} A ${len} ${len} 0 0 ${sweep} ${doorEnd.x} ${doorEnd.y}`}
-            fill="none" stroke={color} strokeWidth={2} strokeDasharray="4 4" opacity={0.6} />
+      {type === 'single' && <SingleDoor p1={p1} p2={p2} len={len} nx={nx} ny={ny} swing={door.swing} color={color} />}
+      {type === 'double' && <DoubleDoor p1={p1} p2={p2} len={len} nx={nx} ny={ny} swing={door.swing} color={color} />}
+      {type === 'slide' && <SlideDoor p1={p1} p2={p2} len={len} ux={ux} uy={uy} nx={nx} ny={ny} swing={door.swing} color={color} />}
       {/* 主入口/逃生口標籤 */}
       {(door.isEntry || door.isExit) && (
-        <text x={(p1.x + p2.x) / 2} y={(p1.y + p2.y) / 2 - 8}
+        <text x={(p1.x + p2.x) / 2 + nx * 25} y={(p1.y + p2.y) / 2 + ny * 25}
               fontSize={20} fill={color} fontWeight="bold" textAnchor="middle">
           {door.isExit ? 'EXIT' : 'IN'}
         </text>
@@ -210,11 +201,93 @@ function DoorGlyph({ wall, door, selected, onSelect }) {
   )
 }
 
+// 單開門:一塊門板 + 90° 弧
+function SingleDoor({ p1, p2, len, nx, ny, swing, color }) {
+  const sw = swing || 'in-right'
+  const hinge = sw.endsWith('right') ? p2 : p1
+  const tip = sw.endsWith('right') ? p1 : p2
+  const inward = sw.startsWith('in') ? 1 : -1
+  const doorEnd = { x: hinge.x + nx * inward * len, y: hinge.y + ny * inward * len }
+  const sweep = sw.endsWith('right') ? (inward > 0 ? 0 : 1) : (inward > 0 ? 1 : 0)
+  return (<>
+    <line x1={hinge.x} y1={hinge.y} x2={doorEnd.x} y2={doorEnd.y}
+          stroke={color} strokeWidth={6} strokeLinecap="round" />
+    <path d={`M ${tip.x} ${tip.y} A ${len} ${len} 0 0 ${sweep} ${doorEnd.x} ${doorEnd.y}`}
+          fill="none" stroke={color} strokeWidth={2} strokeDasharray="4 4" opacity={0.6} />
+  </>)
+}
+
+// 雙開門:兩塊門板從中央往兩側開,各畫一段弧
+function DoubleDoor({ p1, p2, len, nx, ny, swing, color }) {
+  const sw = swing || 'in-right'
+  const inward = sw.startsWith('in') ? 1 : -1
+  const halfLen = len / 2
+  // 中央點
+  const mid = { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 }
+  // 左半門:hinge 在 p1,tip 在 mid;右半門:hinge 在 p2,tip 在 mid
+  const leftEnd = { x: p1.x + nx * inward * halfLen, y: p1.y + ny * inward * halfLen }
+  const rightEnd = { x: p2.x + nx * inward * halfLen, y: p2.y + ny * inward * halfLen }
+  // 弧 sweep:in 跟 out 反向
+  const leftSweep = inward > 0 ? 1 : 0
+  const rightSweep = inward > 0 ? 0 : 1
+  return (<>
+    {/* 左門板 */}
+    <line x1={p1.x} y1={p1.y} x2={leftEnd.x} y2={leftEnd.y}
+          stroke={color} strokeWidth={6} strokeLinecap="round" />
+    <path d={`M ${mid.x} ${mid.y} A ${halfLen} ${halfLen} 0 0 ${leftSweep} ${leftEnd.x} ${leftEnd.y}`}
+          fill="none" stroke={color} strokeWidth={2} strokeDasharray="4 4" opacity={0.6} />
+    {/* 右門板 */}
+    <line x1={p2.x} y1={p2.y} x2={rightEnd.x} y2={rightEnd.y}
+          stroke={color} strokeWidth={6} strokeLinecap="round" />
+    <path d={`M ${mid.x} ${mid.y} A ${halfLen} ${halfLen} 0 0 ${rightSweep} ${rightEnd.x} ${rightEnd.y}`}
+          fill="none" stroke={color} strokeWidth={2} strokeDasharray="4 4" opacity={0.6} />
+  </>)
+}
+
+// 推拉門:沿牆方向滑動的門片 (不旋轉,在牆外側畫一段平行線+箭頭)
+function SlideDoor({ p1, p2, len, ux, uy, nx, ny, swing, color }) {
+  const sw = swing || 'in-right'
+  // left = 門往 p1 方向滑,right = 往 p2 滑
+  const slideToEnd = sw.endsWith('right')
+  // 門片畫在離牆 8 svg unit 的偏移位置 (代表雙軌的另一軌)
+  const offset = 10
+  const dirX = nx * (sw.startsWith('in') ? 1 : -1) * offset
+  const dirY = ny * (sw.startsWith('in') ? 1 : -1) * offset
+  // 門板:跟牆平行,離牆 offset 距離,長度 = len
+  const a = { x: p1.x + dirX, y: p1.y + dirY }
+  const b = { x: p2.x + dirX, y: p2.y + dirY }
+  // 滑動箭頭起點:往滑動方向偏 70%
+  const arrowStart = slideToEnd
+    ? { x: a.x + ux * len * 0.15, y: a.y + uy * len * 0.15 }
+    : { x: b.x - ux * len * 0.15, y: b.y - uy * len * 0.15 }
+  const arrowEnd = slideToEnd
+    ? { x: a.x + ux * len * 0.55, y: a.y + uy * len * 0.55 }
+    : { x: b.x - ux * len * 0.55, y: b.y - uy * len * 0.55 }
+  return (<>
+    {/* 門板 (粗線) */}
+    <line x1={a.x} y1={a.y} x2={b.x} y2={b.y}
+          stroke={color} strokeWidth={6} strokeLinecap="round" />
+    {/* 中央接縫 */}
+    <line x1={(a.x + b.x) / 2} y1={(a.y + b.y) / 2}
+          x2={(p1.x + p2.x) / 2} y2={(p1.y + p2.y) / 2}
+          stroke={color} strokeWidth={2} strokeDasharray="3 3" opacity={0.5} />
+    {/* 滑動方向箭頭 */}
+    <line x1={arrowStart.x} y1={arrowStart.y} x2={arrowEnd.x} y2={arrowEnd.y}
+          stroke={color} strokeWidth={2} opacity={0.7} markerEnd="url(#slide-arrow)" />
+    <defs>
+      <marker id="slide-arrow" viewBox="0 0 10 10" refX="9" refY="5"
+              markerWidth="6" markerHeight="6" orient="auto">
+        <path d="M0,0 L10,5 L0,10 z" fill={color} />
+      </marker>
+    </defs>
+  </>)
+}
+
 /**
  * 窗:兩條平行線 + 中間細線 (玻璃)
  */
-function WindowGlyph({ wall, window, selected, onSelect }) {
-  const ends = openingEnds(wall, window)
+function WindowGlyph({ wall, window, selected, onSelect, plan }) {
+  const ends = openingEnds(wall, window, plan)
   if (!ends) return null
   const { p1, p2 } = ends
   const len = Math.sqrt((p2.x - p1.x) ** 2 + (p2.y - p1.y) ** 2)
