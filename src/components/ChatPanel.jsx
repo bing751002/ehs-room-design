@@ -2,13 +2,11 @@ import { useEffect, useRef, useState } from 'react'
 import { usePlanStore } from '../store/planStore.js'
 import { chatWithClaude, parsePlanActions, claudeReady } from '../lib/claudeApi.js'
 import { newId, newWallId, newDoorId, newWindowId, newSpaceId } from '../lib/constraints.js'
-import { searchSimilarCases, caseToPromptText } from '../lib/caseLibrary.js'
-import { listRules, rulesToPromptText } from '../lib/internalRules.js'
 import { loadChatHistory, appendChatMessage, clearChatHistory } from '../lib/chatHistory.js'
 import { createRoomTemplate } from '../lib/roomTemplates.js'
 import { spaceVertices } from '../lib/constraints.js'
 import { extractForAI } from '../lib/fileExtract.js'
-import { listRegulations, regsToPromptText } from '../lib/regulations.js'
+import { buildRAGContext } from '../lib/chatContext.js'
 
 /**
  * 右側 AI 對話面板 — 仿 illoca 的 Agent 風格
@@ -96,60 +94,12 @@ export default function ChatPanel() {
         ? plan.baseLayer.previewUrl
         : (plan.baseLayer?.type === 'image' ? plan.baseLayer.publicUrl : null)
 
-      // 內部規則:全部 active 規則塞進 prompt
-      let rulesContext = ''
-      try {
-        const rules = await listRules({ activeOnly: true })
-        rulesContext = rulesToPromptText(rules)
-      } catch (e) { console.warn('內部規則讀取失敗', e) }
-
-      // 法規庫:撈相關空間類型的法規
-      let regsContext = ''
-      try {
-        const lowered = text.toLowerCase()
-        const detected = []
-        const map = { '辦公':'office', '會議':'meeting', '茶水':'pantry', '健身':'gym', 'spa':'sauna',
-                      '三溫暖':'sauna', '淋浴':'shower', '更衣':'locker', '休息':'lounge',
-                      '酒店':'lounge', '客房':'lounge', '餐廳':'pantry', '電競':'gym', '診所':'meeting' }
-        for (const [k, v] of Object.entries(map)) if (lowered.includes(k)) detected.push(v)
-        const regs = await listRegulations({ activeOnly: true })
-        regsContext = regsToPromptText(regs, detected)
-      } catch (e) { console.warn('法規庫讀取失敗', e) }
-
-      // 房間庫:把使用者自訂的房型塞進 prompt,AI 規劃時優先用這些
-      let templatesContext = ''
-      try {
-        const { listRoomTemplates } = await import('../lib/roomTemplates.js')
-        const ts = await listRoomTemplates()
-        if (ts.length) {
-          templatesContext = '\n\n# 📚 使用者自訂房間庫 (規劃時優先使用這些尺寸與設計考量):\n' +
-            ts.slice(0, 30).map(t => `- ${t.name} [${t.type}] ${t.width_cm}×${t.depth_cm}×${t.height_cm}cm${t.description ? ' — ' + t.description : ''}`).join('\n')
-        }
-      } catch (e) { console.warn('房間庫讀取失敗', e) }
-
-      // RAG:依使用者最新訊息粗略抓關鍵字當類型,從案例庫撈相近案例給 AI 當參考
-      let casesContext = ''
-      try {
-        const lowered = text.toLowerCase()
-        const detected = []
-        const map = { '辦公':'office', '會議':'meeting', '茶水':'pantry', '健身':'gym', 'spa':'sauna',
-                      '三溫暖':'sauna', '淋浴':'shower', '更衣':'locker', '休息':'lounge',
-                      '酒店':'lounge', '客房':'lounge', '餐廳':'pantry', '電競':'gym', '診所':'meeting' }
-        for (const [k, v] of Object.entries(map)) if (lowered.includes(k)) detected.push(v)
-        if (detected.length) {
-          const top = await searchSimilarCases({ spaceTypes: detected, topK: 5 })
-          if (top.length) {
-            casesContext = '\n\n# 📚 相關歷史案例 (從東森團隊累積案例庫檢索)\n' +
-              '> 每個案例都標註了「圖紙類型」與「時期」,使用時請注意:\n' +
-              '> - 🟢 **現行/已完工** 的案例 = 真實落地經驗,**最高權重**參考\n' +
-              '> - 🟡 **規劃中** 的案例 = 進行中,可借鑑\n' +
-              '> - ⚪ **歷史/已改建** 的案例 = 僅供「曾這樣做過」參考,**不要直接複製**\n' +
-              '> - 🔵 **純參考圖** = 網路靈感,**只當美感參考**不當實際依據\n' +
-              '> - 施工圖 > 完工圖 > 概念圖 > 純參考圖 (依嚴謹度排序)\n\n' +
-                            top.map(x => caseToPromptText(x.case)).join('\n\n')
-          }
-        }
-      } catch (e) { console.warn('案例庫檢索失敗', e) }
+      // RAG context (內部規則 + 法規 + 案例 + 房型)
+      const { rulesContext, regsContext, casesContext, templatesContext } =
+        await buildRAGContext(text, {
+          includeRules: true, includeRegs: true,
+          includeCases: true, includeTemplates: true
+        })
 
       const reply = await chatWithClaude(
         newMessages.map(m => ({ role: m.role, content: m.content })),

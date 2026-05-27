@@ -1,5 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { webSearch, tavilyReady, formatSearchResults } from './webSearch.js'
+import { listRegulations } from './regulations.js'
 
 /**
  * Claude API client (前端 demo 模式)
@@ -207,12 +208,17 @@ const SYSTEM_PROMPT = `你是「東森空間規劃實驗室」資深室內設計
 /**
  * 傳送對話訊息給 Claude。
  * @param {Array} messages - [{role:'user'|'assistant', content:string|Array}]
- * @param {Object} context - {plan, baseLayerImageUrl, verbose}
+ * @param {Object} context - {plan, baseLayerImageUrl, verbose, systemPromptOverride}
  *                          verbose=true 時要求 AI 顯示完整 Stage 1+2 推理過程
+ *                          systemPromptOverride=string 時完全取代規劃師 SYSTEM_PROMPT
+ *                          (用於審圖 / 設計評估 Agent)
  * @returns {Promise<string>} Claude 回應的文字
  */
 export async function chatWithClaude(messages, context = {}) {
   if (!client) throw new Error('Claude API Key 未設定,請填入 .env.local 的 VITE_CLAUDE_API_KEY')
+
+  // 自訂 system prompt:審圖/評估等 Agent 完全取代規劃師 prompt
+  const baseSystemPrompt = context.systemPromptOverride || SYSTEM_PROMPT
 
   // 把目前 plan 狀態塞進 system 後段,讓 AI 知道現在畫布長怎樣
   const bl = context.plan?.baseLayer
@@ -330,18 +336,35 @@ ${JSON.stringify(spaceList, null, 2)}
     }
   }
 
-  // 定義 web_search tool 給 Claude 自主呼叫
-  const tools = tavilyReady ? [{
-    name: 'web_search',
-    description: '搜尋網路即時資訊。當你需要查台灣最新法規、品牌型錄、價格、設計靈感、競品案例時使用。',
+  // 定義 tools 給 Claude 自主呼叫
+  const tools = []
+  // lookup_regulation:從使用者法規庫查指定法規/條號的完整原文
+  // 任何時候 AI 覺得「上方適用法規」沒涵蓋,可直接撈
+  tools.push({
+    name: 'lookup_regulation',
+    description: '從使用者已建立的法規庫中查詢特定法規/條號的完整原文。當你需要某條法規的精確內容、而它沒出現在上方「適用法規」區塊時必須呼叫此 tool。可以用法規標題、條號、主題詞查。',
     input_schema: {
       type: 'object',
       properties: {
-        query: { type: 'string', description: '繁體中文搜尋詞,例如「建築技術規則 三溫暖 通風」' }
+        regulation_title: { type: 'string', description: '法規標題或部分標題,例如「建築技術規則建築設計施工編」「消防法」「無障礙」' },
+        keywords: { type: 'array', items: { type: 'string' }, description: '要查的條號或主題詞陣列,例如 ["第79條","防火區劃"] 或 ["§93","步行距離"]' }
       },
-      required: ['query']
+      required: ['keywords']
     }
-  }] : []
+  })
+  if (tavilyReady) {
+    tools.push({
+      name: 'web_search',
+      description: '搜尋網路即時資訊。注意:法規查詢請優先用 lookup_regulation tool (使用者已建立的法規庫)。當你需要查品牌型錄、價格、設計靈感、競品案例、法規庫沒收錄的新法規時才用 web_search。',
+      input_schema: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: '繁體中文搜尋詞,例如「Hansgrohe 蓮蓬頭型錄」' }
+        },
+        required: ['query']
+      }
+    })
+  }
 
   let convoMessages = [...finalMessages]
   let lastText = ''
@@ -349,7 +372,7 @@ ${JSON.stringify(spaceList, null, 2)}
     const resp = await client.messages.create({
       model: MODEL,
       max_tokens: MAX_TOKENS,
-      system: SYSTEM_PROMPT + regsContext + rulesContext + templatesContext + planContext + casesContext + verboseInstr,
+      system: baseSystemPrompt + regsContext + rulesContext + templatesContext + planContext + casesContext + verboseInstr,
       tools,
       messages: convoMessages
     })
@@ -377,6 +400,14 @@ ${JSON.stringify(spaceList, null, 2)}
               return { type: 'tool_result', tool_use_id: tu.id, content: txt }
             } catch (e) {
               return { type: 'tool_result', tool_use_id: tu.id, content: '搜尋失敗: ' + e.message, is_error: true }
+            }
+          }
+          if (tu.name === 'lookup_regulation') {
+            try {
+              const txt = await lookupRegulation(tu.input.regulation_title, tu.input.keywords)
+              return { type: 'tool_result', tool_use_id: tu.id, content: txt }
+            } catch (e) {
+              return { type: 'tool_result', tool_use_id: tu.id, content: '法規查詢失敗: ' + e.message, is_error: true }
             }
           }
           return { type: 'tool_result', tool_use_id: tu.id, content: '未知工具: ' + tu.name, is_error: true }
@@ -416,4 +447,65 @@ async function fetchImageAsBase64(url) {
   let bin = ''
   for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i])
   return { mimeType, base64: btoa(bin) }
+}
+
+/**
+ * lookup_regulation tool 實作:從使用者法規庫撈指定條文
+ * @param {string} regTitle - 法規標題或部分 (可選,模糊比對)
+ * @param {Array} keywords - 關鍵字陣列,例如 ["第79條","防火區劃"]
+ * @returns {Promise<string>} 找到的條文內容 (markdown)
+ */
+async function lookupRegulation(regTitle, keywords) {
+  if (!keywords?.length && !regTitle) {
+    return '錯誤:必須提供 regulation_title 或 keywords'
+  }
+  const regs = await listRegulations({ activeOnly: true })
+  if (!regs.length) return '法規庫沒有任何啟用中的法規'
+
+  // 1. 先依 title 篩 (若提供)
+  let candidates = regs
+  if (regTitle) {
+    const q = regTitle.toLowerCase()
+    candidates = regs.filter(r => (r.title || '').toLowerCase().includes(q))
+    if (!candidates.length) {
+      // title 沒命中 → 退回全部,讓 keywords 自己找
+      candidates = regs
+    }
+  }
+
+  // 2. 對每部 candidate 找含關鍵字的條文段落
+  const out = []
+  const MAX_CHARS = 20000  // tool 回傳上限
+  let total = 0
+  for (const r of candidates) {
+    if (total >= MAX_CHARS) break
+    if (!r.content) continue
+    // 用條文為單位切分
+    const articleRegex = /(第\s*[\d零一二三四五六七八九十百千]+(?:[-之][\d零一二三四五六七八九十]+)?\s*條[^第]*?(?=第\s*[\d零一二三四五六七八九十百千]+(?:[-之][\d零一二三四五六七八九十]+)?\s*條|$))/g
+    const articles = r.content.match(articleRegex) || [r.content]
+
+    const matched = []
+    for (const seg of articles) {
+      let score = 0
+      for (const k of (keywords || [])) {
+        if (seg.includes(k)) score += k.startsWith('§') || k.startsWith('第') ? 10 : 1
+      }
+      if (score > 0) matched.push({ seg, score })
+    }
+    if (!matched.length) continue
+
+    matched.sort((a, b) => b.score - a.score)
+    const block = [`## ${r.title}`]
+    for (const m of matched) {
+      if (total + m.seg.length > MAX_CHARS) break
+      block.push(m.seg.trim())
+      total += m.seg.length
+    }
+    out.push(block.join('\n\n'))
+  }
+
+  if (!out.length) {
+    return `在法規庫中找不到關鍵字 [${(keywords || []).join(', ')}] ${regTitle ? `於「${regTitle}」` : ''} 的相關條文。請嘗試其他關鍵字或法規標題。`
+  }
+  return '從法規庫找到以下相關條文:\n\n' + out.join('\n\n---\n\n')
 }

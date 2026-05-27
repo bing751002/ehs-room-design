@@ -84,7 +84,6 @@ export default function RulesPage() {
                     <div className="flex items-center gap-2 flex-wrap">
                       <h3 className="font-semibold">{r.title}</h3>
                       {r.category && <span className="bg-amber-100 px-1.5 py-0.5 rounded text-xs">{r.category}</span>}
-                      <span className="text-xs text-slate-500">優先度 {r.priority}</span>
                       <span className="text-[10px] text-slate-400">
                         👤 {ownerLabel(profileMap, r.owner, currentUid)} 加
                       </span>
@@ -128,7 +127,6 @@ export default function RulesPage() {
 function RuleForm({ onClose }) {
   const [title, setTitle] = useState('')
   const [category, setCategory] = useState('其他')
-  const [priority, setPriority] = useState(5)
   const [content, setContent] = useState('')
   const [attachments, setAttachments] = useState([])
   const [busy, setBusy] = useState(false)
@@ -161,7 +159,8 @@ function RuleForm({ onClose }) {
     try {
       await createRule({
         title, category, content, attachments,
-        priority: Number(priority), is_active: true
+        priority: 0,           // 規則之間無優先順序,全部都是鐵則
+        is_active: true
       })
       onClose()
     } catch (ex) { alert(ex.message) }
@@ -189,13 +188,6 @@ function RuleForm({ onClose }) {
             </select>
           </label>
         </div>
-
-        <label className="block">
-          <span className="text-xs font-medium">優先度 (1-10,越高越優先覆寫公規)</span>
-          <input type="number" min="1" max="10" value={priority}
-                 onChange={e => setPriority(e.target.value)}
-                 className="w-24 border rounded px-2 py-1.5 mt-1" />
-        </label>
 
         <label className="block">
           <span className="text-xs font-medium">附件上傳 (PDF/Word/圖片)</span>

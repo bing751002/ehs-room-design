@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { spaceVertices, polygonCenter, polygonArea, polygonRealArea, computeSnap } from '../../lib/constraints.js'
+import { spaceVertices, polygonCenter, polygonVisualCenter, polygonArea, polygonRealArea, computeSnap } from '../../lib/constraints.js'
 import { usePlanStore } from '../../store/planStore.js'
 
 /**
@@ -19,8 +19,10 @@ export default function SpacePolygon({ space, selected, onSelect }) {
   // 拖移/縮放中暫存 (顯示尺寸 ruler)
   const [activeRuler, setActiveRuler] = useState(null)  // { minX, minY, maxX, maxY, type: 'move'|'resize' }
 
+  const editMode = usePlanStore(s => s.editMode)
   const plan = usePlanStore.getState().plan
-  const center = polygonCenter(vertices)
+  // 標籤位置:對 L 型/ㄇ 字型用 visual center (內部最遠離邊點),矩形仍是中心
+  const center = polygonVisualCenter(vertices)
   const real = polygonRealArea(vertices, plan)
   const areaM2 = real.m2
   const ping = real.ping
@@ -41,6 +43,10 @@ export default function SpacePolygon({ space, selected, onSelect }) {
 
   // 拖拉整個空間 (點空間內部任何位置)
   function dragWhole(e) {
+    // 編輯模式 (加門/窗/牆/量距/加柱/多邊形) 時讓事件冒泡到 Canvas 處理
+    // 不能在這 stopPropagation,否則 Canvas onMouseDown 永遠收不到
+    const mode = usePlanStore.getState().editMode
+    if (mode && mode !== 'select') return
     e.stopPropagation()
     // Shift + 點 = 多選 toggle (不進入拖移)
     if (e.shiftKey) {
@@ -185,6 +191,50 @@ export default function SpacePolygon({ space, selected, onSelect }) {
   }
 
   /**
+   * 拖整條邊 — 兩個端點一起平移 (限制沿邊的垂直方向移動,保持邊水平/垂直)
+   * 用於 ㄇ 字型「上半段整個往右拉」這種需求
+   */
+  function dragEdge(e, edgeIdx) {
+    e.stopPropagation()
+    const svg = e.currentTarget.ownerSVGElement
+    if (!svg) return
+    function getPos(ev) {
+      const pt = svg.createSVGPoint()
+      pt.x = ev.clientX; pt.y = ev.clientY
+      const ctm = svg.getScreenCTM()
+      return ctm ? pt.matrixTransform(ctm.inverse()) : null
+    }
+    const start = getPos(e); if (!start) return
+    const startVs = vertices.map(v => ({ ...v }))
+    const a = startVs[edgeIdx]
+    const b = startVs[(edgeIdx + 1) % startVs.length]
+    // 邊向量 → 法向量 (垂直邊的方向),拖動只沿法向移動
+    const ex = b.x - a.x, ey = b.y - a.y
+    const len = Math.hypot(ex, ey) || 1
+    const nx = -ey / len, ny = ex / len   // 90° rotated unit vector
+    const ia = edgeIdx, ib = (edgeIdx + 1) % startVs.length
+    function move(ev) {
+      const p = getPos(ev); if (!p) return
+      // 投影到法向量
+      const dx = p.x - start.x, dy = p.y - start.y
+      const distAlongNormal = dx * nx + dy * ny
+      const moveX = Math.round(nx * distAlongNormal)
+      const moveY = Math.round(ny * distAlongNormal)
+      const newVs = startVs.map((v, i) => {
+        if (i === ia || i === ib) return { x: v.x + moveX, y: v.y + moveY }
+        return v
+      })
+      updateSpace(space.id, { vertices: newVs, x: undefined, y: undefined, w: undefined, h: undefined })
+    }
+    function up() {
+      window.removeEventListener('mousemove', move)
+      window.removeEventListener('mouseup', up)
+    }
+    window.addEventListener('mousemove', move)
+    window.addEventListener('mouseup', up)
+  }
+
+  /**
    * 8 方向整體縮放 — 拖某個 bbox 上的手柄,等比/單軸縮放整個多邊形。
    * anchor 是「不動的對角點」,handle 是被拖的角。
    */
@@ -277,7 +327,7 @@ export default function SpacePolygon({ space, selected, onSelect }) {
                stroke={selected ? '#3b82f6' : isMultiSelected ? '#10b981' : 'none'}
                strokeWidth={(selected || isMultiSelected) ? 4 : 0} strokeDasharray="8 6"
                onMouseDown={dragWhole}
-               style={{ cursor: 'move' }} />
+               style={{ cursor: editMode === 'select' ? 'move' : 'crosshair' }} />
 
       {/* 即時尺寸 ruler — 拖移時顯示 */}
       {ruler && (() => {
@@ -306,17 +356,17 @@ export default function SpacePolygon({ space, selected, onSelect }) {
         )
       })()}
 
-      {/* 名稱與面積 — 字體自動隨畫布縮放,確保螢幕上一直可讀 */}
-      <text x={center.x} y={center.y - fontMain * 0.4} fontSize={fontMain} fontWeight="700"
-            fill="#1e293b" textAnchor="middle" dominantBaseline="middle"
-            pointerEvents="none" fontFamily="system-ui">
-        {space.name}
-      </text>
-      <text x={center.x} y={center.y + fontMain * 0.5} fontSize={fontSub} fontWeight="500"
-            fill="#7c3aed" textAnchor="middle" dominantBaseline="middle"
-            pointerEvents="none">
-        {areaM2} m² · {ping} 坪
-      </text>
+      {/* 名稱與面積 — 設計過的卡片式標籤 (白底圓角 + 細節分層) */}
+      <SpaceLabel
+        cx={center.x}
+        cy={center.y}
+        name={space.name}
+        type={space.type}
+        areaM2={areaM2}
+        ping={ping}
+        fontMain={fontMain}
+        fontSub={fontSub}
+      />
 
       {/* 選取時:bbox 縮放手柄 (橘色,8方向) + 頂點手柄 (藍色) + 邊中點加號 */}
       {selected && (
@@ -346,34 +396,35 @@ export default function SpacePolygon({ space, selected, onSelect }) {
             ))
           })()}
 
-          {/* 頂點手柄 (藍色,個別拖頂點調整形狀);多邊形 ≥ 5 個頂點才顯示,矩形不顯示避免擁擠 */}
-          {vertices.length >= 5 && vertices.map((v, i) => (
+          {/* 頂點手柄 (藍色,個別拖頂點調整形狀);多邊形 (>4 頂點) 才顯示,矩形用 bbox 縮放即可 */}
+          {vertices.length > 4 && vertices.map((v, i) => (
             <circle key={`vh-${i}`}
-                    cx={v.x} cy={v.y} r={handleR * 0.75}
+                    cx={v.x} cy={v.y} r={handleR * 0.85}
                     fill="#3b82f6" stroke="white" strokeWidth={handleStrokeW}
                     onMouseDown={(e) => dragVertex(e, i)}
                     onContextMenu={(e) => removeVertex(e, i)}
                     style={{ cursor: 'grab' }}>
-              <title>拖動改變形狀,右鍵刪除此頂點</title>
+              <title>拖動改變形狀,右鍵刪除此頂點,Shift 拖動鎖正交</title>
             </circle>
           ))}
 
-          {/* 邊中點加新頂點 (雙擊) */}
-          {vertices.map((v, i) => {
+          {/* 邊中點: 拖移=平移整條邊 (沿法向);雙擊=插入新頂點 */}
+          {vertices.length > 4 && vertices.map((v, i) => {
             const b = vertices[(i + 1) % vertices.length]
             const mx = (v.x + b.x) / 2, my = (v.y + b.y) / 2
             return (
               <g key={`eh-${i}`}>
-                <circle cx={mx} cy={my} r={handleR * 0.55} fill="white" stroke="#3b82f6"
+                <circle cx={mx} cy={my} r={handleR * 0.7} fill="#10b981" stroke="white"
                         strokeWidth={handleStrokeW}
+                        onMouseDown={(e) => dragEdge(e, i)}
                         onDoubleClick={(e) => addVertexAtEdge(e, i)}
-                        style={{ cursor: 'cell' }}>
-                  <title>雙擊在這條邊加頂點</title>
+                        style={{ cursor: 'move' }}>
+                  <title>拖移=平移整條邊 (沿垂直方向),雙擊=插入頂點</title>
                 </circle>
-                <text x={mx} y={my + handleR * 0.2}
-                      fontSize={handleR * 0.9} fill="#3b82f6"
+                <text x={mx} y={my + handleR * 0.25}
+                      fontSize={handleR * 0.85} fontWeight="bold" fill="white"
                       textAnchor="middle" dominantBaseline="middle"
-                      pointerEvents="none">+</text>
+                      pointerEvents="none">⇕</text>
               </g>
             )
           })}
@@ -381,6 +432,103 @@ export default function SpacePolygon({ space, selected, onSelect }) {
       )}
     </g>
   )
+}
+
+/**
+ * 空間標籤卡片 — 白底圓角 + 名稱 + 類型小標籤 + 紫色面積膠囊
+ * 設計目標:在任何底色/底圖上都清晰可讀,有層次,專業感
+ */
+const TYPE_COLORS = {
+  office:   { bg: '#dbeafe', fg: '#1e40af', label: '辦公' },
+  meeting:  { bg: '#dcfce7', fg: '#166534', label: '會議' },
+  pantry:   { bg: '#fef3c7', fg: '#92400e', label: '茶水' },
+  gym:      { bg: '#fce7f3', fg: '#9d174d', label: '健身' },
+  sauna:    { bg: '#fed7aa', fg: '#9a3412', label: 'SPA' },
+  shower:   { bg: '#bae6fd', fg: '#075985', label: '淋浴' },
+  locker:   { bg: '#e9d5ff', fg: '#6b21a8', label: '更衣' },
+  lounge:   { bg: '#fce7f3', fg: '#9d174d', label: 'Lounge' },
+  restroom: { bg: '#e2e8f0', fg: '#334155', label: '衛生' },
+  corridor: { bg: '#f1f5f9', fg: '#475569', label: '走道' },
+  custom:   { bg: '#f1f5f9', fg: '#475569', label: '空間' }
+}
+
+function SpaceLabel({ cx, cy, name, type, areaM2, ping, fontMain, fontSub }) {
+  const typeStyle = TYPE_COLORS[type] || TYPE_COLORS.custom
+  // 估算文字寬度 — 中文字 ≈ fontSize × 1,英數 ≈ × 0.55
+  const nameLen = countWidth(name || '')
+  const cardW = Math.max(nameLen * fontMain * 0.6 + fontMain * 1.6, fontMain * 6)
+  const cardH = fontMain * 1.6
+  // 第二行:類型徽章 + 面積膠囊
+  const subH = fontSub * 1.5
+  const totalH = cardH + subH + fontSub * 0.3
+  const startY = cy - totalH / 2
+
+  // 類型徽章
+  const typeTxt = typeStyle.label
+  const typeW = typeTxt.length * fontSub * 0.7 + fontSub * 0.8
+  // 面積膠囊
+  const areaTxt = `${ping} 坪`
+  const areaW = areaTxt.length * fontSub * 0.55 + fontSub * 1
+  const gap = fontSub * 0.4
+  const totalSubW = typeW + gap + areaW
+  const subStartX = cx - totalSubW / 2
+
+  return (
+    <g pointerEvents="none">
+      {/* 主名稱卡片 (白底圓角 + 陰影) */}
+      <rect x={cx - cardW / 2} y={startY}
+            width={cardW} height={cardH}
+            rx={cardH * 0.18}
+            fill="white" opacity={0.97}
+            stroke="#cbd5e1" strokeWidth={Math.max(1.5, fontMain * 0.025)} />
+      <text x={cx} y={startY + cardH / 2}
+            fontSize={fontMain} fontWeight="700"
+            fill="#0f172a" textAnchor="middle" dominantBaseline="central"
+            fontFamily="system-ui, -apple-system, 'PingFang TC', sans-serif"
+            letterSpacing={fontMain * 0.02}>
+        {name}
+      </text>
+
+      {/* 第二行:類型徽章 + 面積膠囊 */}
+      <g>
+        {/* 類型徽章 */}
+        <rect x={subStartX} y={startY + cardH + fontSub * 0.3}
+              width={typeW} height={subH}
+              rx={subH * 0.5}
+              fill={typeStyle.bg}
+              stroke={typeStyle.fg} strokeWidth={1} strokeOpacity={0.3} />
+        <text x={subStartX + typeW / 2}
+              y={startY + cardH + fontSub * 0.3 + subH / 2}
+              fontSize={fontSub * 0.85} fontWeight="600"
+              fill={typeStyle.fg} textAnchor="middle" dominantBaseline="central">
+          {typeTxt}
+        </text>
+
+        {/* 面積膠囊 */}
+        <rect x={subStartX + typeW + gap}
+              y={startY + cardH + fontSub * 0.3}
+              width={areaW} height={subH}
+              rx={subH * 0.5}
+              fill="#7c3aed" opacity={0.95} />
+        <text x={subStartX + typeW + gap + areaW / 2}
+              y={startY + cardH + fontSub * 0.3 + subH / 2}
+              fontSize={fontSub * 0.9} fontWeight="700"
+              fill="white" textAnchor="middle" dominantBaseline="central">
+          {areaTxt}
+        </text>
+      </g>
+    </g>
+  )
+}
+
+// 估算字串「字寬單位」,中文字 1.0,英文/數字/標點 0.5
+function countWidth(s) {
+  let w = 0
+  for (const ch of s) {
+    if (/[\u4e00-\u9fa5\u3000-\u303f]/.test(ch)) w += 1
+    else w += 0.55
+  }
+  return w
 }
 
 /**

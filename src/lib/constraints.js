@@ -92,11 +92,15 @@ export function wallAngle(w) {
 export function pointOnWall(w, t) {
   return { x: w.x1 + (w.x2 - w.x1) * t, y: w.y1 + (w.y2 - w.y1) * t }
 }
-// 計算門/窗在牆上的兩端 (用 width)
-export function openingEnds(wall, opening) {
+// 計算門/窗在牆上的兩端
+// opening.width 單位是 cm (真實),wall 長度是 svg unit
+// 必須先用 plan.svgUnitToRealCm 把 width 換成 svg unit 再算 t1/t2
+export function openingEnds(wall, opening, plan = null) {
   const len = wallLength(wall)
   if (len === 0) return null
-  const halfW = opening.width / 2
+  const f = plan?.svgUnitToRealCm || 1
+  const widthInSvgUnit = (opening.width || 0) / f
+  const halfW = widthInSvgUnit / 2
   const t1 = Math.max(0, opening.t - halfW / len)
   const t2 = Math.min(1, opening.t + halfW / len)
   return { p1: pointOnWall(wall, t1), p2: pointOnWall(wall, t2) }
@@ -151,10 +155,27 @@ export function spaceEdges(space) {
  */
 export function allRenderableWalls(plan) {
   const out = []
+  // 共邊去重:兩條邊端點 (無向) 完全相同 = 同一面牆,第二條標記 isShared
+  // wallById 仍會保留 isShared 條目,讓門/窗的 wallId 找得到
+  const seen = new Map()  // key: 'minX,minY-maxX,maxY' → primary wallId
+  // 小公差,避免浮點誤差導致重合判錯 (容差 1 svg unit ≈ 1cm)
+  const round = (n) => Math.round(n)
   for (const sp of (plan.spaces || [])) {
-    for (const e of spaceEdges(sp)) out.push(e)
+    for (const e of spaceEdges(sp)) {
+      const a = `${Math.min(round(e.x1), round(e.x2))},${Math.min(round(e.y1), round(e.y2))}`
+      const b = `${Math.max(round(e.x1), round(e.x2))},${Math.max(round(e.y1), round(e.y2))}`
+      const key = `${a}-${b}`
+      const primaryId = seen.get(key)
+      if (primaryId) {
+        // 共邊!仍 push 但標記 isShared,渲染時跳過,kind 升級成 interior
+        out.push({ ...e, isShared: true, primaryId, kind: 'interior' })
+      } else {
+        seen.set(key, e.id)
+        out.push(e)
+      }
+    }
   }
-  // 加上 legacy 獨立 walls (使用者自己拉的、還沒成為空間的)
+  // legacy 獨立 walls
   for (const w of (plan.walls || [])) {
     out.push({ ...w, isLegacy: true })
   }
@@ -175,13 +196,65 @@ export function polygonArea(vs) {
 }
 
 /**
- * 多邊形中心點 (簡單版:頂點平均);夠用於放標籤。
+ * 多邊形中心點 (簡單版:頂點平均);夠用於凸多邊形的標籤。
  */
 export function polygonCenter(vs) {
   if (!vs || !vs.length) return { x: 0, y: 0 }
   let sx = 0, sy = 0
   for (const v of vs) { sx += v.x; sy += v.y }
   return { x: sx / vs.length, y: sy / vs.length }
+}
+
+/**
+ * 點到線段最短距離
+ */
+function distPointToSegment(p, a, b) {
+  const dx = b.x - a.x, dy = b.y - a.y
+  if (dx === 0 && dy === 0) return Math.hypot(p.x - a.x, p.y - a.y)
+  const t = Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / (dx * dx + dy * dy)))
+  return Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy))
+}
+
+/**
+ * 多邊形內「最遠離邊」的點 (pole of inaccessibility 簡化版)
+ * 對 L 型、ㄇ 字型等非凸多邊形,這比 polygonCenter (bbox 中心) 更適合放標籤
+ * 用 N×N 網格採樣,選距離所有邊最遠且在多邊形內的點
+ */
+export function polygonVisualCenter(vs, gridSize = 24) {
+  if (!vs || vs.length < 3) return polygonCenter(vs || [])
+  const xs = vs.map(v => v.x), ys = vs.map(v => v.y)
+  const minX = Math.min(...xs), maxX = Math.max(...xs)
+  const minY = Math.min(...ys), maxY = Math.max(...ys)
+  const stepX = (maxX - minX) / gridSize
+  const stepY = (maxY - minY) / gridSize
+  let bestPt = polygonCenter(vs)
+  let bestDist = -1
+  // 先驗證 centroid 是否在內;若在,直接設為候選 baseline
+  if (pointInPolygon(bestPt, vs)) {
+    bestDist = minDistToEdges(bestPt, vs)
+  } else {
+    bestDist = -1   // centroid 不在內 (典型 ㄇ 字型/L 型),強制找
+  }
+  // 網格採樣
+  for (let i = 1; i < gridSize; i++) {
+    for (let j = 1; j < gridSize; j++) {
+      const p = { x: minX + i * stepX, y: minY + j * stepY }
+      if (!pointInPolygon(p, vs)) continue
+      const d = minDistToEdges(p, vs)
+      if (d > bestDist) { bestDist = d; bestPt = p }
+    }
+  }
+  return bestPt
+}
+
+function minDistToEdges(p, vs) {
+  let min = Infinity
+  for (let i = 0; i < vs.length; i++) {
+    const a = vs[i], b = vs[(i + 1) % vs.length]
+    const d = distPointToSegment(p, a, b)
+    if (d < min) min = d
+  }
+  return min
 }
 
 /**

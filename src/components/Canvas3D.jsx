@@ -1,7 +1,7 @@
 import * as THREE from 'three'
-import { Canvas } from '@react-three/fiber'
-import { OrbitControls, Grid, Sky } from '@react-three/drei'
-import { useMemo } from 'react'
+import { Canvas, useFrame, useThree } from '@react-three/fiber'
+import { OrbitControls, Grid, Sky, PointerLockControls, useTexture } from '@react-three/drei'
+import { createContext, useContext, useEffect, useMemo, useRef } from 'react'
 import { usePlanStore } from '../store/planStore.js'
 import {
   spaceVertices, allRenderableWalls, polygonCenter, polygonArea, openingEnds
@@ -15,52 +15,114 @@ import {
  *  - 窗 → 牆上嵌透明玻璃 (近似)
  *  - 光照:Environment HDR + directional
  *  - 單位:1 Three.js unit = 1 公尺 (座標 / 100)
+ *
+ * v4 加入:
+ *  - 底圖 (PDF/JPG) 貼到地板,跟 2D 對齊
+ *  - viewMode = 'orbit' | 'topdown' | 'walk' (第一人稱漫遊)
+ *  - teleportTo: 傳送相機到某個空間中央
  */
 const CM_TO_M = 0.01
+const EYE_HEIGHT = 1.65  // 漫遊模式人眼高度
+
+/**
+ * 取得「svg unit → meter」係數
+ * 2D 編輯的座標是 svg unit;若使用者校準過比例尺,1 svg unit = svgUnitToRealCm cm
+ * 預設 1 (svg unit == cm),校準後可能 0.5、2 等
+ */
+function unitToMeter(plan) {
+  return (plan.svgUnitToRealCm || 1) * CM_TO_M
+}
+
+// 給所有子元件共用「svg unit → meter」係數,避免 prop drill
+const ScaleCtx = createContext(CM_TO_M)
+const useScale = () => useContext(ScaleCtx)
 
 /**
  * @param {Object} props
- *   - view: 'perspective' (預設斜視角) | 'topdown' (俯瞰,給 2D 編輯內嵌預覽)
+ *   - viewMode: 'orbit' | 'topdown' | 'walk'
  *   - mini: true 為小型嵌入版,關閉控制器、減負載
- *   - showRoof: 是否顯示天花 (預設 false 才看得到內部)
+ *   - teleportTarget: { x, y } cm 座標,設定後相機瞬移到該點 (漫遊用)
+ *   - onTeleportDone: 傳送完成後呼叫,父層可清空 target
  */
-export default function Canvas3D({ view = 'perspective', mini = false, showRoof = false }) {
+export default function Canvas3D({
+  viewMode = 'orbit',
+  mini = false,
+  teleportTarget = null,
+  onTeleportDone
+}) {
   const plan = usePlanStore(s => s.plan)
   const bounds = plan.bounds || { w: 4000, h: 3000 }
-  const center = [bounds.w * CM_TO_M / 2, 0, bounds.h * CM_TO_M / 2]
-  // 俯瞰相機在正上方
-  const camPos = view === 'topdown'
-    ? [center[0], Math.max(bounds.w, bounds.h) * CM_TO_M * 0.8, center[2] + 0.01]
-    : [center[0] + 15, 18, center[2] + 22]
-  const fov = view === 'topdown' ? 35 : 50
+  const U = unitToMeter(plan)   // svg unit → meter (含校準)
+  const worldW = bounds.w * U
+  const worldH = bounds.h * U
+  const center = [worldW / 2, 0, worldH / 2]
+
+  // 各 viewMode 的初始相機位置
+  const camPos = viewMode === 'topdown'
+    ? [center[0], Math.max(worldW, worldH) * 0.8, center[2] + 0.01]
+    : viewMode === 'walk'
+      ? [center[0], EYE_HEIGHT, center[2] + 5]
+      : [center[0] + worldW * 0.5, Math.max(worldW, worldH) * 0.45, center[2] + worldH * 0.7]
+  const fov = viewMode === 'topdown' ? 35 : 60   // 透視/漫遊用 60 比較貼近人眼
 
   return (
     <div className="h-full w-full bg-gradient-to-b from-sky-100 to-slate-50">
-      <Canvas shadows camera={{ position: camPos, fov }}
+      <Canvas shadows camera={{ position: camPos, fov, near: 0.05, far: 1000 }}
               dpr={mini ? 1 : [1, 2]}>
-        {!mini && <Sky sunPosition={[100, 50, 100]} />}
-        <ambientLight intensity={0.55} />
-        <directionalLight position={[20, 30, 10]} intensity={1.3} castShadow
-                          shadow-mapSize-width={mini ? 512 : 1024}
-                          shadow-mapSize-height={mini ? 512 : 1024} />
-        <hemisphereLight intensity={0.4} groundColor="#cccccc" />
-        <Grid args={[200, 200]} cellSize={1} sectionSize={5}
-              cellThickness={0.3} sectionThickness={0.6}
-              cellColor="#e2e8f0" sectionColor="#94a3b8"
-              infiniteGrid={false} position={[center[0], 0, center[2]]} />
+        <ScaleCtx.Provider value={U}>
+          {!mini && viewMode !== 'walk' && <Sky sunPosition={[100, 50, 100]} />}
+          <ambientLight intensity={0.55} />
+          <directionalLight position={[20, 30, 10]} intensity={1.3} castShadow
+                            shadow-mapSize-width={mini ? 512 : 1024}
+                            shadow-mapSize-height={mini ? 512 : 1024} />
+          <hemisphereLight intensity={0.4} groundColor="#cccccc" />
+          <Grid args={[Math.max(worldW, worldH) * 4, Math.max(worldW, worldH) * 4]}
+                cellSize={1} sectionSize={5}
+                cellThickness={0.3} sectionThickness={0.6}
+                cellColor="#e2e8f0" sectionColor="#94a3b8"
+                infiniteGrid={false} position={[center[0], 0, center[2]]} />
 
-        <FloorPlate bounds={bounds} />
-        <ColumnsLayer plan={plan} />
-        <SpacesLayer plan={plan} />
-        <WallsLayer3D plan={plan} />
-        <FurnitureLayer plan={plan} />
-        <LegacyRoomsLayer plan={plan} />
+          <FloorPlate bounds={bounds} />
+          <BaseLayerFloor plan={plan} />
+          <ColumnsLayer plan={plan} />
+          <SpacesLayer plan={plan} />
+          <WallsLayer3D plan={plan} />
+          <FurnitureLayer plan={plan} />
+          <LegacyRoomsLayer plan={plan} />
 
-        {!mini && (
-          <OrbitControls target={center}
-                         enableRotate={view !== 'topdown'}
-                         maxPolarAngle={view === 'topdown' ? 0.1 : Math.PI / 2.1} />
-        )}
+          {!mini && viewMode === 'walk' && (
+            <>
+              <PointerLockControls />
+              <FirstPersonWalker
+                teleportTarget={teleportTarget}
+                onTeleportDone={onTeleportDone}
+                bounds={bounds}
+              />
+            </>
+          )}
+          {!mini && viewMode !== 'walk' && (
+            <OrbitControls target={center}
+                           enableRotate={viewMode !== 'topdown'}
+                           enablePan
+                           maxPolarAngle={viewMode === 'topdown' ? 0.1 : Math.PI / 2.05}
+                           minDistance={1}
+                           maxDistance={Math.max(worldW, worldH) * 3}
+                           panSpeed={1.2}
+                           rotateSpeed={0.9}
+                           zoomSpeed={1.0}
+                           screenSpacePanning
+                           mouseButtons={{
+                             // 恢復標準習慣:左鍵旋轉,右鍵 pan,滾輪縮放
+                             LEFT: viewMode === 'topdown' ? THREE.MOUSE.PAN : THREE.MOUSE.ROTATE,
+                             MIDDLE: THREE.MOUSE.DOLLY,
+                             RIGHT: THREE.MOUSE.PAN
+                           }}
+                           touches={{
+                             ONE: viewMode === 'topdown' ? THREE.TOUCH.PAN : THREE.TOUCH.ROTATE,
+                             TWO: THREE.TOUCH.DOLLY_PAN
+                           }} />
+          )}
+        </ScaleCtx.Provider>
       </Canvas>
     </div>
   )
@@ -83,20 +145,84 @@ const SPACE_FLOOR_COLORS = {
 
 // 樓層底盤
 function FloorPlate({ bounds }) {
+  const U = useScale()
+  return (
+    <mesh rotation-x={-Math.PI / 2}
+          position={[bounds.w * U / 2, 0, bounds.h * U / 2]}
+          receiveShadow>
+      <planeGeometry args={[bounds.w * U, bounds.h * U]} />
+      <meshStandardMaterial color="#f1f5f9" />
+    </mesh>
+  )
+}
+
+/**
+ * 底圖 (PDF/JPG) 貼到 3D 地板,跟 2D 對齊
+ * 用既有 baseLayer.placement (cm) — 跟 Canvas2D 同一套邏輯
+ */
+function BaseLayerFloor({ plan }) {
+  const U = useScale()
+  const baseLayer = plan.baseLayer
+  if (!baseLayer) return null
+  const imgUrl = baseLayer.type === 'pdf'
+    ? baseLayer.previewUrl
+    : baseLayer.type === 'image'
+      ? baseLayer.publicUrl
+      : null
+  if (!imgUrl) return null
+
+  // 算 placement (svg unit) — 跟 Canvas2D BaseLayerRender 同一邏輯
+  let p = baseLayer.placement
+  if (!p) {
+    const t = baseLayer.transform || { x: 0, y: 0, scale: 1, rotation: 0 }
+    const W = baseLayer.width || 1000
+    const H = baseLayer.height || 1000
+    const svgW = plan.bounds?.w || 4000
+    const svgH = plan.bounds?.h || 3000
+    const fit = Math.min((svgW * 0.9) / W, (svgH * 0.9) / H)
+    const s = fit * (t.scale || 1)
+    p = {
+      drawW: W * s,
+      drawH: H * s,
+      offsetX: (svgW - W * s) / 2 + (t.x || 0),
+      offsetY: (svgH - H * s) / 2 + (t.y || 0),
+      rotation: t.rotation || 0,
+      opacity: baseLayer.opacity ?? 0.6
+    }
+  }
+
+  // 中心位置 (svg unit → m,含校準)
+  const cx = (p.offsetX + p.drawW / 2) * U
+  const cz = (p.offsetY + p.drawH / 2) * U
+  const w = p.drawW * U
+  const h = p.drawH * U
+
+  return (
+    <group position={[cx, 0.003, cz]} rotation-y={-(p.rotation || 0) * Math.PI / 180}>
+      <BaseLayerMesh url={imgUrl} w={w} h={h} opacity={p.opacity ?? 0.6} />
+    </group>
+  )
+}
+
+function BaseLayerMesh({ url, w, h, opacity }) {
+  // useTexture suspends until ready — Canvas 預設有 Suspense fallback
+  const tex = useTexture(url)
   return (
     <mesh rotation-x={-Math.PI / 2} receiveShadow>
-      <planeGeometry args={[bounds.w * CM_TO_M, bounds.h * CM_TO_M]} />
-      <meshStandardMaterial color="#f1f5f9" />
+      <planeGeometry args={[w, h]} />
+      <meshStandardMaterial map={tex} transparent opacity={opacity}
+                            roughness={0.95} metalness={0} />
     </mesh>
   )
 }
 
 // 結構柱
 function ColumnsLayer({ plan }) {
+  const U = useScale()
   return (<>
     {(plan.structuralColumns || []).map((c, i) => {
-      const w = c.w * CM_TO_M, d = c.h * CM_TO_M, h = 3
-      const cx = (c.x + c.w/2) * CM_TO_M, cz = (c.y + c.h/2) * CM_TO_M
+      const w = c.w * U, d = c.h * U, h = 3
+      const cx = (c.x + c.w/2) * U, cz = (c.y + c.h/2) * U
       return (
         <mesh key={i} position={[cx, h/2, cz]} castShadow>
           <boxGeometry args={[w, h, d]} />
@@ -115,43 +241,34 @@ function SpacesLayer({ plan }) {
 }
 
 function SpaceFloor({ space }) {
+  const U = useScale()
   const vs = spaceVertices(space)
   const geom = useMemo(() => {
     if (vs.length < 3) return null
     const shape = new THREE.Shape()
-    shape.moveTo(vs[0].x * CM_TO_M, vs[0].y * CM_TO_M)
+    shape.moveTo(vs[0].x * U, vs[0].y * U)
     for (let i = 1; i < vs.length; i++) {
-      shape.lineTo(vs[i].x * CM_TO_M, vs[i].y * CM_TO_M)
+      shape.lineTo(vs[i].x * U, vs[i].y * U)
     }
     shape.closePath()
     return new THREE.ShapeGeometry(shape)
-  }, [JSON.stringify(vs)])
+  }, [JSON.stringify(vs), U])
   if (!geom) return null
   // 依空間類型挑材質色 (近似不同地材)
   const floorColor = SPACE_FLOOR_COLORS[space.type] || space.color || '#d6d3d1'
   return (
-    <mesh geometry={geom} rotation-x={Math.PI / 2} position={[0, 0.005, 0]} receiveShadow>
-      <meshStandardMaterial color={floorColor} roughness={0.7} metalness={0.05} />
+    <mesh geometry={geom} rotation-x={Math.PI / 2} position={[0, 0.008, 0]} receiveShadow>
+      <meshStandardMaterial color={floorColor} roughness={0.7} metalness={0.05}
+                            transparent opacity={0.85} />
     </mesh>
   )
 }
 
 // 牆:以線段為中心,用 BoxGeometry 拉高
 function WallsLayer3D({ plan }) {
-  // 為避免共用邊重複畫,先去重 (兩條相反方向的線段視為同一條)
+  // allRenderableWalls 已經把共邊標 isShared,跳過不畫即可
   const walls = useMemo(() => {
-    const seen = new Set()
-    const out = []
-    for (const w of allRenderableWalls(plan)) {
-      // 正規化:小座標在前
-      const a = `${Math.min(w.x1, w.x2)},${Math.min(w.y1, w.y2)}`
-      const b = `${Math.max(w.x1, w.x2)},${Math.max(w.y1, w.y2)}`
-      const key = `${a}-${b}`
-      if (seen.has(key)) continue
-      seen.add(key)
-      out.push(w)
-    }
-    return out
+    return allRenderableWalls(plan).filter(w => !w.isShared)
   }, [JSON.stringify(plan.walls || []), JSON.stringify(plan.spaces || [])])
 
   // 為每面牆找關聯的門/窗 (依 wallId)
@@ -175,14 +292,16 @@ function WallsLayer3D({ plan }) {
 }
 
 function WallSegment3D({ wall, openings }) {
+  const U = useScale()
   const dx = wall.x2 - wall.x1, dy = wall.y2 - wall.y1
-  const len = Math.sqrt(dx * dx + dy * dy) * CM_TO_M
+  const len = Math.sqrt(dx * dx + dy * dy) * U
   if (len === 0) return null
   const angle = Math.atan2(dy, dx)  // X 軸到 (dx,dy) 的角度
+  // 牆厚跟門窗寬度本來就是 cm,所以用 CM_TO_M(不受校準影響,牆厚 12cm 永遠是 12cm)
   const thickness = (wall.thickness ?? 12) * CM_TO_M
   const height = 2.8  // 預設樓高 280cm
-  const cx = (wall.x1 + wall.x2) / 2 * CM_TO_M
-  const cz = (wall.y1 + wall.y2) / 2 * CM_TO_M
+  const cx = (wall.x1 + wall.x2) / 2 * U
+  const cz = (wall.y1 + wall.y2) / 2 * U
   // 牆面塗料色 (溫暖米白,接近酷家樂風格)
   const color = wall.kind === 'exterior' ? '#e8e1d4' : '#f5efe4'
 
@@ -254,13 +373,14 @@ function WallSegment3D({ wall, openings }) {
   )
 }
 
-// 家具
+// 家具 (家具尺寸是 svg unit,位置也是,要套校準)
 function FurnitureLayer({ plan }) {
+  const U = useScale()
   return (<>
     {(plan.furniture || []).map(f => {
-      const w = f.w * CM_TO_M, d = f.h * CM_TO_M
-      const h = (f.height ?? 80) * CM_TO_M
-      const cx = (f.x + f.w/2) * CM_TO_M, cz = (f.y + f.h/2) * CM_TO_M
+      const w = f.w * U, d = f.h * U
+      const h = (f.height ?? 80) * CM_TO_M    // height 屬性是 cm 不受校準
+      const cx = (f.x + f.w/2) * U, cz = (f.y + f.h/2) * U
       return (
         <mesh key={f.id} position={[cx, h/2, cz]}
               rotation-y={(f.rot ?? 0) * Math.PI / 180} castShadow>
@@ -274,14 +394,15 @@ function FurnitureLayer({ plan }) {
 
 // Legacy 房間 (還沒升級成 spaces 的舊資料)
 function LegacyRoomsLayer({ plan }) {
+  const U = useScale()
   // 如果已經有 spaces,就不畫舊 rooms,避免重疊
   if ((plan.spaces || []).length > 0) return null
   return (<>
     {(plan.rooms || []).map(r => {
-      const w = r.w * CM_TO_M, h = r.h * CM_TO_M
+      const w = r.w * U, h = r.h * U
       const height = (r.height ?? 280) * CM_TO_M
       const wallT = 0.1
-      const cx = (r.x + r.w/2) * CM_TO_M, cz = (r.y + r.h/2) * CM_TO_M
+      const cx = (r.x + r.w/2) * U, cz = (r.y + r.h/2) * U
       return (
         <group key={r.id} position={[cx, 0, cz]}>
           <mesh position={[0, 0.001, 0]} rotation-x={-Math.PI / 2}>
@@ -303,4 +424,77 @@ function LegacyRoomsLayer({ plan }) {
       )
     })}
   </>)
+}
+
+/**
+ * 第一人稱漫遊:WASD 移動 + 傳送
+ * - 滑鼠視角由 PointerLockControls 控制 (drei 內建)
+ * - W/A/S/D 或 方向鍵移動,Shift 加速,Space 跳 (簡化:就是 y bobbing 略過)
+ * - teleportTarget 變動時瞬移
+ */
+function FirstPersonWalker({ teleportTarget, onTeleportDone, bounds }) {
+  const { camera } = useThree()
+  const U = useScale()
+  const keys = useRef({ w: false, a: false, s: false, d: false, shift: false })
+
+  // 鍵盤事件監聽
+  useEffect(() => {
+    const map = {
+      'w': 'w', 'arrowup': 'w',
+      's': 's', 'arrowdown': 's',
+      'a': 'a', 'arrowleft': 'a',
+      'd': 'd', 'arrowright': 'd',
+      'shift': 'shift'
+    }
+    const onDown = (e) => {
+      const k = map[e.key.toLowerCase()]
+      if (k) { keys.current[k] = true; if (k !== 'shift') e.preventDefault() }
+    }
+    const onUp = (e) => {
+      const k = map[e.key.toLowerCase()]
+      if (k) keys.current[k] = false
+    }
+    window.addEventListener('keydown', onDown)
+    window.addEventListener('keyup', onUp)
+    return () => {
+      window.removeEventListener('keydown', onDown)
+      window.removeEventListener('keyup', onUp)
+    }
+  }, [])
+
+  // 傳送
+  useEffect(() => {
+    if (!teleportTarget) return
+    camera.position.set(
+      teleportTarget.x * U,
+      EYE_HEIGHT,
+      teleportTarget.y * U
+    )
+    onTeleportDone?.()
+  }, [teleportTarget, camera, onTeleportDone, U])
+
+  // 每幀依按鍵更新位置 — 速度加快讓巡視大空間順手
+  useFrame((_, delta) => {
+    const baseSpeed = keys.current.shift ? 16 : 8  // m/s
+    const dist = baseSpeed * delta
+    const forward = new THREE.Vector3()
+    camera.getWorldDirection(forward)
+    forward.y = 0
+    if (forward.lengthSq() < 1e-6) return
+    forward.normalize()
+    const right = new THREE.Vector3().crossVectors(forward, camera.up).normalize()
+    if (keys.current.w) camera.position.addScaledVector(forward, dist)
+    if (keys.current.s) camera.position.addScaledVector(forward, -dist)
+    if (keys.current.a) camera.position.addScaledVector(right, -dist)
+    if (keys.current.d) camera.position.addScaledVector(right, dist)
+    // 鎖定眼高 + 限制不要走出 bounds 太遠
+    camera.position.y = EYE_HEIGHT
+    const worldW = bounds.w * U
+    const worldH = bounds.h * U
+    const pad = Math.max(worldW, worldH) * 0.2
+    camera.position.x = Math.max(-pad, Math.min(worldW + pad, camera.position.x))
+    camera.position.z = Math.max(-pad, Math.min(worldH + pad, camera.position.z))
+  })
+
+  return null
 }

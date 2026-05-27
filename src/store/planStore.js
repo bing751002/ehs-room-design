@@ -79,6 +79,12 @@ export const usePlanStore = create((set, get) => ({
   pendingWallStart: null,
   setPendingWallStart: (p) => set({ pendingWallStart: p }),
 
+  // 多邊形空間繪製中: 已點頂點陣列 (svg unit)
+  pendingPolygon: [],
+  addPolygonVertex: (p) => set(s => ({ pendingPolygon: [...s.pendingPolygon, p] })),
+  popPolygonVertex: () => set(s => ({ pendingPolygon: s.pendingPolygon.slice(0, -1) })),
+  clearPolygon: () => set({ pendingPolygon: [] }),
+
   // 撤銷重做歷史 (session-only,雲端只存最新狀態)
   history: { stack: [], pointer: -1 },
 
