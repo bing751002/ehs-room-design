@@ -1,21 +1,19 @@
 /**
- * AI 識別圖紙生戶型 — Claude 版
+ * AI 識別圖紙生戶型 — Gemini 版（aiVision.js 的並排實驗版本）
  *
- * 策略 (跟 aiVisionGemini.js 同步):
- *  - Chain-of-thought:JSON 第一欄 detected_labels (先列標籤),Step 3 才畫 spaces
- *  - 最小尺寸硬規則 + 後處理 extend (確保小房間視覺可見)
- *  - AI 不估算 cm,只回 normalized [0,1] 座標
+ * 同樣策略:
+ *  - AI 不估算 cm，只回 normalized [0,1] 座標
  *  - 程式碼用 baseLayer.placement 把 0-1 換成 svg unit
  *
  * 切換: AiRecognizeButton.jsx 的 import 指向哪個檔
  */
-import Anthropic from '@anthropic-ai/sdk'
+import { GoogleGenAI } from '@google/genai'
 
-const apiKey = import.meta.env.VITE_CLAUDE_API_KEY
-const client = apiKey ? new Anthropic({ apiKey, dangerouslyAllowBrowser: true }) : null
+const apiKey = import.meta.env.VITE_GEMINI_API_KEY
+const ai = apiKey ? new GoogleGenAI({ apiKey }) : null
 
-// claude-opus-4-7 最強 vision;flash-tier 替代:claude-haiku-4-5
-const MODEL = 'claude-opus-4-7'
+// 可調：'gemini-3.5-flash' / 'gemini-3-pro' / 'gemini-2.5-pro' / 'gemini-2.5-flash'
+const MODEL = 'gemini-3.5-flash'
 
 const SYSTEM = `你是嚴謹的建築平面圖辨識引擎。**完整 ≥ 準確**:有中文標籤的房間一定要標到。
 
@@ -127,7 +125,7 @@ const SYSTEM = `你是嚴謹的建築平面圖辨識引擎。**完整 ≥ 準確
  *   - dxfHint?: string  DXF 結構摘要 (Hybrid 模式用,見 lib/dxfRender.js summarizeDxf)
  */
 export async function recognizePlanFromImage({ imageUrl, bounds, baseLayer, svgBounds, dxfHint }) {
-  if (!client) throw new Error('Claude API Key 未設定')
+  if (!ai) throw new Error('Gemini API Key 未設定')
 
   const res = await fetch(imageUrl)
   if (!res.ok) throw new Error('底圖下載失敗 ' + res.status)
@@ -153,32 +151,38 @@ ${baseLayer.width || '未知'} × ${baseLayer.height || '未知'} pixels
 - 我會自己把 0-1 換成最終座標。
 - 你只要老老實實看圖,看到什麼說什麼。
 ${hintBlock}
+請直接輸出 JSON。`
 
-⚠ 你的回應必須是 raw JSON,**不要** markdown code fence (\`\`\`),**不要**前後說明文字。第一個字元必須是 \`{\`。`
-
-  // Claude opus 4.7 vision + 大 JSON 輸出處理時間長,SDK 強制 streaming 避免 10 分鐘 timeout
-  const stream = client.messages.stream({
+  const resp = await ai.models.generateContent({
     model: MODEL,
-    max_tokens: 32000,  // 25 個 space + walls 大約 5-8K tokens,設大避免被截斷
-    system: SYSTEM,
-    messages: [{
+    contents: [{
       role: 'user',
-      content: [
-        { type: 'image', source: { type: 'base64', media_type: mimeType, data: base64 } },
-        { type: 'text', text: userPrompt }
+      parts: [
+        { inlineData: { mimeType, data: base64 } },
+        { text: userPrompt }
       ]
-    }]
+    }],
+    config: {
+      systemInstruction: SYSTEM,
+      temperature: 0.1,
+      responseMimeType: 'application/json',
+      // 25 個房間 × 8 vertex + walls + 其他 JSON 大約 5-8K tokens,
+      // 預設 8192 邊緣,設大避免被截斷導致 AI 偷懶降採樣
+      maxOutputTokens: 32768
+    }
   })
-  const resp = await stream.finalMessage()
 
-  const text = resp.content.filter(b => b.type === 'text').map(b => b.text).join('\n').trim()
+  // Gemini SDK 提供 resp.text helper；保底直接掃 candidates
+  const text = (resp.text
+    || resp?.candidates?.[0]?.content?.parts?.map(p => p.text || '').join('')
+    || '').trim()
   const cleaned = text.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim()
   let parsed
   try {
     parsed = JSON.parse(cleaned)
   } catch (e) {
     const m = cleaned.match(/\{[\s\S]*\}/)
-    if (!m) throw new Error('Claude 沒回有效 JSON: ' + text.slice(0, 200))
+    if (!m) throw new Error('Gemini 沒回有效 JSON: ' + text.slice(0, 200))
     parsed = JSON.parse(m[0])
   }
 

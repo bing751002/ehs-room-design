@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { usePlanStore } from '../store/planStore.js'
-import { recognizePlanFromImage } from '../lib/aiVision.js'
+import { recognizePlanFromImage } from '../lib/aiVisionGemini.js'
+import { renderDxfToBlobUrl, summarizeDxf } from '../lib/dxfRender.js'
 import { newWallId, newDoorId, newWindowId, newSpaceId } from '../lib/constraints.js'
 
 /**
@@ -16,8 +17,10 @@ export default function AiRecognizeButton() {
   const bl = plan.baseLayer
   if (!bl) return null  // 沒底圖不顯示
 
-  const imgUrl = bl.type === 'pdf' ? bl.previewUrl : (bl.type === 'image' ? bl.publicUrl : null)
-  const supported = Boolean(imgUrl)
+  // PDF/image 直接有 URL;DXF 兩條路:
+  //   - 有 bl.previewUrl (DWG 雙路徑下來的 PDF preview) → 用它,vision LLM 看品質高的 PDF 渲染
+  //   - 沒有 → runtime 渲染 DXF 成 PNG (純 .dxf 上傳路徑)
+  const supported = bl.type === 'pdf' || bl.type === 'image' || (bl.type === 'dxf' && bl.dxfLines?.length > 0)
 
   async function onRun() {
     if (!supported) { setErr('此底圖格式不支援'); return }
@@ -48,12 +51,31 @@ export default function AiRecognizeButton() {
     const keepColumns = (plan.structuralColumns?.length || 0) > 0
       && confirm(`畫布上已經有 ${plan.structuralColumns.length} 根柱子。\n\n[確定] 保留現有柱子,AI 不要動柱子\n[取消] 用 AI 辨識的柱子取代`)
     setBusy(true); setErr('')
+    // PDF (含 DWG 來的) / image → 純 vision OCR,無 dxfHint
+    // 純 .dxf 直接上傳 → 走 hybrid:runtime 渲染 + summarizeDxf 結構提示
+    let imageUrl, blobUrlToRevoke = null, dxfHint = null
+    if (bl.type === 'dxf') {
+      try {
+        const summary = summarizeDxf(bl.dxfLines, bl.bbox, bl.dxfTexts || [])
+        dxfHint = summary.hint
+        const { url } = await renderDxfToBlobUrl(bl.dxfLines, bl.bbox, { texts: bl.dxfTexts || [] })
+        imageUrl = url
+        blobUrlToRevoke = url
+      } catch (e) {
+        setBusy(false)
+        setErr('DXF 渲染失敗: ' + (e.message || e))
+        return
+      }
+    } else {
+      imageUrl = bl.type === 'pdf' ? bl.previewUrl : bl.publicUrl
+    }
     try {
       const result = await recognizePlanFromImage({
-        imageUrl: imgUrl,
+        imageUrl,
         bounds: plan.bounds,
         baseLayer: bl,
-        svgBounds: { w: plan.bounds.w, h: plan.bounds.h }
+        svgBounds: { w: plan.bounds.w, h: plan.bounds.h },
+        dxfHint
       })
       // 套用到 plan
       const walls = (result.walls || []).map(w => ({
@@ -101,6 +123,7 @@ export default function AiRecognizeButton() {
       console.error(e)
       setErr(e.message || 'AI 辨識失敗')
     } finally {
+      if (blobUrlToRevoke) URL.revokeObjectURL(blobUrlToRevoke)
       setBusy(false)
     }
   }
