@@ -10,12 +10,12 @@
 import { GoogleGenAI } from '@google/genai'
 
 const apiKey = import.meta.env.VITE_GEMINI_API_KEY
-const ai = apiKey ? new GoogleGenAI({ apiKey }) : null
+export const ai = apiKey ? new GoogleGenAI({ apiKey }) : null
 
 // 可調：'gemini-3.5-flash' / 'gemini-3-pro' / 'gemini-2.5-pro' / 'gemini-2.5-flash'
-const MODEL = 'gemini-3.5-flash'
+export const MODEL = 'gemini-3.5-flash'
 
-const SYSTEM = `你是嚴謹的建築平面圖辨識引擎。**完整 ≥ 準確**:有中文標籤的房間一定要標到。
+export const SYSTEM = `你是嚴謹的建築平面圖辨識引擎。**完整 ≥ 準確**:有中文標籤的房間一定要標到。
 
 # 座標系統 (重要!)
 **所有座標都用 normalized [0, 1] 圖像座標**:
@@ -62,6 +62,12 @@ const SYSTEM = `你是嚴謹的建築平面圖辨識引擎。**完整 ≥ 準確
    - 每個 space 的 bbox **必須 width ≥ 0.04 AND height ≥ 0.04** (即至少 4% × 4% 圖面積)
    - 就算最小的洽談室、主管室,也是 ~3 米見方的空間,h 不可能 < 0.04
    - 寫完每個 space 的 vertices 後,**自己算 max(y) - min(y),如果 < 0.04 → 你錯了,重畫**
+
+**🚫 房間不可重疊 (絕對遵守)**:
+   - 每個房間是獨立空間,兩個 space 的多邊形**不可以交疊**
+   - 相鄰房間共用一道牆 → 邊界各自停在牆的自己這一側,中間留牆厚的空隙,**不是兩邊都畫到牆中線造成重疊**
+   - 密集排列的小房間 (例如茶水間、洽談區、主管室擠在一起) 特別容易框到鄰房身上 → 框每一個前先確認它的範圍**沒有侵入隔壁已經框過的房間**
+   - 寫完所有 spaces 後,**兩兩檢查 bbox 有沒有交疊**,有交疊就把侵入的那一邊收回到自己的牆界
 
 **檢核法**:你框完後想像「站在房間中央,從這個多邊形邊界到最近的牆有多遠?」應該是 0 (緊貼牆)。如果你心裡覺得「牆跟我框的邊界中間還有空間」→ 你框小了,重畫。
 
@@ -153,40 +159,8 @@ ${baseLayer.width || '未知'} × ${baseLayer.height || '未知'} pixels
 ${hintBlock}
 請直接輸出 JSON。`
 
-  const resp = await ai.models.generateContent({
-    model: MODEL,
-    contents: [{
-      role: 'user',
-      parts: [
-        { inlineData: { mimeType, data: base64 } },
-        { text: userPrompt }
-      ]
-    }],
-    config: {
-      systemInstruction: SYSTEM,
-      temperature: 0.1,
-      responseMimeType: 'application/json',
-      // 25 個房間 × 8 vertex + walls + 其他 JSON 大約 5-8K tokens,
-      // 預設 8192 邊緣,設大避免被截斷導致 AI 偷懶降採樣
-      maxOutputTokens: 32768
-    }
-  })
+  const parsed = await callGeminiVision(base64, mimeType, userPrompt)
 
-  // Gemini SDK 提供 resp.text helper；保底直接掃 candidates
-  const text = (resp.text
-    || resp?.candidates?.[0]?.content?.parts?.map(p => p.text || '').join('')
-    || '').trim()
-  const cleaned = text.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim()
-  let parsed
-  try {
-    parsed = JSON.parse(cleaned)
-  } catch (e) {
-    const m = cleaned.match(/\{[\s\S]*\}/)
-    if (!m) throw new Error('Gemini 沒回有效 JSON: ' + text.slice(0, 200))
-    parsed = JSON.parse(m[0])
-  }
-
-  // === debug 用:印 chain-of-thought 第一步結果 ===
   const labels = parsed.detected_labels || []
   const spaces = parsed.spaces || []
   console.log('[AI 識別] detected_labels:', labels.length, labels.map(l => l.name))
@@ -198,9 +172,59 @@ ${hintBlock}
     console.warn(`[AI 識別] ⚠ 只列出 ${labels.length} 個 labels (典型工作圖 15-30 個),可能漏掃`)
   }
 
-  // 後處理:強制最小尺寸 — AI 對中央密集小房間常給 h < 0.03 的「窄條」,
-  // 視覺上完全看不見。從多邊形中心點往外擴到至少 0.04 × 0.04,確保可見。
-  const MIN_DIM = 0.04
+  extendSmallSpaces(spaces)
+  logSpaceBboxes(spaces)
+
+  return finalizeToSvg(parsed, baseLayer, svgBounds)
+}
+
+// ════════════════════════════════════════════════════════════════════
+// 共用 helper (recognizePlanFromImage 與 aiVisionTiled.js 切塊版共用)
+// ════════════════════════════════════════════════════════════════════
+
+/**
+ * 底層 Gemini vision 呼叫:吃 base64 圖 + userPrompt,回 parsed JSON object。
+ * 不做後處理、不轉座標 — 純 raw 結果。切塊版每塊都呼叫這個。
+ */
+export async function callGeminiVision(base64, mimeType, userPrompt, { systemInstruction = SYSTEM } = {}) {
+  if (!ai) throw new Error('Gemini API Key 未設定')
+  const resp = await ai.models.generateContent({
+    model: MODEL,
+    contents: [{
+      role: 'user',
+      parts: [
+        { inlineData: { mimeType, data: base64 } },
+        { text: userPrompt }
+      ]
+    }],
+    config: {
+      systemInstruction,
+      temperature: 0.1,
+      responseMimeType: 'application/json',
+      // 25 個房間 × 8 vertex + walls + 其他 JSON 大約 5-8K tokens,
+      // 預設 8192 邊緣,設大避免被截斷導致 AI 偷懶降採樣
+      maxOutputTokens: 32768
+    }
+  })
+  const text = (resp.text
+    || resp?.candidates?.[0]?.content?.parts?.map(p => p.text || '').join('')
+    || '').trim()
+  const cleaned = text.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim()
+  try {
+    return JSON.parse(cleaned)
+  } catch (e) {
+    const m = cleaned.match(/\{[\s\S]*\}/)
+    if (!m) throw new Error('Gemini 沒回有效 JSON: ' + text.slice(0, 200))
+    return JSON.parse(m[0])
+  }
+}
+
+/**
+ * 後處理:強制最小尺寸 — AI 對中央密集小房間常給 h < 0.03 的「窄條」,
+ * 視覺上完全看不見。從多邊形中心點往外擴到至少 MIN_DIM × MIN_DIM,確保可見。
+ * In-place 改 spaces。回傳被擴張的數量。
+ */
+export function extendSmallSpaces(spaces, MIN_DIM = 0.04) {
   let extendedCount = 0
   spaces.forEach(s => {
     if (!s.vertices || s.vertices.length < 3) return
@@ -223,11 +247,13 @@ ${hintBlock}
     }
   })
   if (extendedCount > 0) {
-    console.log(`[AI 識別] 後處理:${extendedCount} 個過小 space 被擴張到最小 0.04 × 0.04`)
+    console.log(`[AI 識別] 後處理:${extendedCount} 個過小 space 被擴張到最小 ${MIN_DIM} × ${MIN_DIM}`)
   }
+  return extendedCount
+}
 
-  // 印各 space 的 normalized bbox (在轉成 svg unit 前的原始 0-1 座標)
-  // 用來診斷:同座標重複 / 太小 / 越界
+/** debug:把各 space 的 normalized bbox 印成表格 */
+export function logSpaceBboxes(spaces) {
   console.table(spaces.map(s => {
     const xs = (s.vertices || []).map(v => v.x)
     const ys = (s.vertices || []).map(v => v.y)
@@ -243,10 +269,14 @@ ${hintBlock}
       pts: xs.length
     }
   }))
+}
 
-  // 把 normalized 0-1 換成 plan canvas svg unit 座標
-  // 新格式直接用 baseLayer.placement（跟 Canvas2D / Canvas3D / BaseLayerControls 一致）
-  // 舊資料 fallback 用 transform 重算（保留相容）
+/**
+ * 把 parsed 的 normalized 0-1 座標換成 plan canvas svg unit 座標。
+ * 新格式直接用 baseLayer.placement(跟 Canvas2D / Canvas3D / BaseLayerControls 一致);
+ * 舊資料 fallback 用 transform 重算(保留相容)。
+ */
+export function finalizeToSvg(parsed, baseLayer, svgBounds) {
   const W = baseLayer.width || svgBounds.w
   const H = baseLayer.height || svgBounds.h
   let p = baseLayer.placement

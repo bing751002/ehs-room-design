@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { usePlanStore } from '../store/planStore.js'
 import { recognizePlanFromImage } from '../lib/aiVisionGemini.js'
+import { recognizePlanTiled } from '../lib/aiVisionTiled.js'
 import { renderDxfToBlobUrl, summarizeDxf } from '../lib/dxfRender.js'
 import { newWallId, newDoorId, newWindowId, newSpaceId } from '../lib/constraints.js'
 
@@ -12,6 +13,7 @@ export default function AiRecognizeButton() {
   const plan = usePlanStore(s => s.plan)
   const setPlan = usePlanStore(s => s.setPlan)
   const [busy, setBusy] = useState(false)
+  const [busyMsg, setBusyMsg] = useState('')
   const [err, setErr] = useState('')
 
   const bl = plan.baseLayer
@@ -22,8 +24,11 @@ export default function AiRecognizeButton() {
   //   - 沒有 → runtime 渲染 DXF 成 PNG (純 .dxf 上傳路徑)
   const supported = bl.type === 'pdf' || bl.type === 'image' || (bl.type === 'dxf' && bl.dxfLines?.length > 0)
 
-  async function onRun() {
+  async function onRun(useTiled = false) {
     if (!supported) { setErr('此底圖格式不支援'); return }
+    if (useTiled && bl.type !== 'pdf' && bl.type !== 'image') {
+      setErr('切塊識別只支援 PDF / 圖片底圖'); return
+    }
     // 強制提示校準
     if (!bl.scaleCalibration) {
       const ok = confirm([
@@ -70,13 +75,21 @@ export default function AiRecognizeButton() {
       imageUrl = bl.type === 'pdf' ? bl.previewUrl : bl.publicUrl
     }
     try {
-      const result = await recognizePlanFromImage({
-        imageUrl,
-        bounds: plan.bounds,
-        baseLayer: bl,
-        svgBounds: { w: plan.bounds.w, h: plan.bounds.h },
-        dxfHint
-      })
+      const result = useTiled
+        ? await recognizePlanTiled({
+            imageUrl,
+            baseLayer: bl,
+            svgBounds: { w: plan.bounds.w, h: plan.bounds.h },
+            dxfHint,
+            onProgress: (m) => setBusyMsg(m)
+          })
+        : await recognizePlanFromImage({
+            imageUrl,
+            bounds: plan.bounds,
+            baseLayer: bl,
+            svgBounds: { w: plan.bounds.w, h: plan.bounds.h },
+            dxfHint
+          })
       // 套用到 plan
       const walls = (result.walls || []).map(w => ({
         id: newWallId(), thickness: 12, kind: 'interior', ...w
@@ -125,6 +138,7 @@ export default function AiRecognizeButton() {
     } finally {
       if (blobUrlToRevoke) URL.revokeObjectURL(blobUrlToRevoke)
       setBusy(false)
+      setBusyMsg('')
     }
   }
 
@@ -135,12 +149,21 @@ export default function AiRecognizeButton() {
 
   const hasContent = (plan.walls?.length || plan.spaces?.length || plan.doors?.length || plan.windows?.length) > 0
 
+  const canTile = bl.type === 'pdf' || bl.type === 'image'
+
   return (
     <>
-      <button onClick={onRun} disabled={busy || !supported}
+      <button onClick={() => onRun(false)} disabled={busy || !supported}
               className="px-3 py-1 rounded bg-brand-700 text-white text-xs hover:bg-brand-500 disabled:opacity-50">
-        {busy ? '辨識中…(30-60秒)' : '🤖 AI 識別圖紙'}
+        {busy ? (busyMsg || '辨識中…(30-60秒)') : '🤖 AI 識別圖紙'}
       </button>
+      {canTile && (
+        <button onClick={() => onRun(true)} disabled={busy || !supported}
+                title="切成多塊分別識別,中央密集小房間更準,但慢 5 倍 (約 2-3 分鐘)"
+                className="px-3 py-1 rounded bg-indigo-600 text-white text-xs hover:bg-indigo-500 disabled:opacity-50">
+          {busy ? (busyMsg || '切塊辨識中…') : '🔬 切塊精細識別'}
+        </button>
+      )}
       {hasContent && (
         <button onClick={clearAll}
                 className="px-2 py-1 rounded border text-[10px] text-red-600 hover:bg-red-50">
