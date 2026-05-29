@@ -5,16 +5,27 @@ export default function Auth() {
   const [email, setEmail] = useState('')
   const [sent, setSent] = useState(false)
   const [err, setErr] = useState('')
+  const [busy, setBusy] = useState(false)
 
   async function send(e) {
     e.preventDefault()
     setErr('')
-    const { error } = await supabase.auth.signInWithOtp({
-      email,
-      options: { emailRedirectTo: window.location.origin }
-    })
-    if (error) setErr(error.message)
-    else setSent(true)
+    setBusy(true)
+    console.log('[auth] 開始寄送 OTP', email)
+    try {
+      const { data, error } = await supabase.auth.signInWithOtp({
+        email,
+        options: { emailRedirectTo: window.location.origin }
+      })
+      console.log('[auth] Supabase 回應', { data, error })
+      if (error) setErr(error.message)
+      else setSent(true)
+    } catch (ex) {
+      console.error('[auth] 例外', ex)
+      setErr('寄送失敗: ' + (ex.message || String(ex)))
+    } finally {
+      setBusy(false)
+    }
   }
 
   return (
