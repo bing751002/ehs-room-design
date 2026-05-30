@@ -7,6 +7,7 @@ import FurnitureLibrary from './FurnitureLibrary.jsx'
 import ScorePanel from './ScorePanel.jsx'
 import BaseLayerUpload from './BaseLayerUpload.jsx'
 import BaseLayerControls from './BaseLayerControls.jsx'
+import DxfPdfImportWizard from './DxfPdfImportWizard.jsx'
 import ChatPanel from './ChatPanel.jsx'
 import EditorToolbar from './EditorToolbar.jsx'
 import BomPanel from './BomPanel.jsx'
@@ -68,6 +69,7 @@ export default function Editor() {
               ))}
             </div>
           </div>
+          <DxfPdfImportWizard />
           <BaseLayerControls />
         </div>
         <div className="flex-1 min-h-0 relative">

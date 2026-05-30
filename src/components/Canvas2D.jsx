@@ -65,20 +65,64 @@ function BaseLayerRender({ baseLayer, svgW, svgH }) {
   const cy = p.offsetY + p.drawH / 2
   const transformStr = p.rotation ? `rotate(${p.rotation} ${cx} ${cy})` : undefined
 
-  if (baseLayer.type === 'dxf' && baseLayer.dxfLines?.length) {
+  const dxfLines = baseLayer.previewLines?.length ? baseLayer.previewLines : baseLayer.dxfLines
+  if (baseLayer.type === 'dxf' && dxfLines?.length) {
     const bb = baseLayer.bbox
     const sx = p.drawW / (bb.width || 1)
     const sy = p.drawH / (bb.height || 1)
+    const strokeW = Math.max(1.5, 2.5 / Math.max(sx, sy))
+    if (baseLayer.importMode === 'dxf-pdf' && baseLayer.pdfImport?.imageHref) {
+      return (
+        <g transform={transformStr}>
+          <image href={baseLayer.pdfImport.imageHref}
+                 x={p.offsetX} y={p.offsetY}
+                 width={p.drawW} height={p.drawH}
+                 opacity={p.opacity ?? 0.72}
+                 preserveAspectRatio="none" />
+          <g fill="none" opacity="0.88">
+            {dxfLines.map((l, i) => (
+              <line key={`pdf-dxf-l${i}`}
+                    x1={p.offsetX + (l.x1 - bb.minX) * sx}
+                    y1={p.offsetY + (l.y1 - bb.minY) * sy}
+                    x2={p.offsetX + (l.x2 - bb.minX) * sx}
+                    y2={p.offsetY + (l.y2 - bb.minY) * sy}
+                    stroke={l.color || '#0ea5e9'} strokeWidth={strokeW} />
+            ))}
+          </g>
+        </g>
+      )
+    }
+    const texts = baseLayer.dxfTexts || []
     return (
-      <g transform={transformStr} opacity={p.opacity ?? 0.55}>
-        {baseLayer.dxfLines.map((l, i) => (
-          <line key={i}
+      <g transform={transformStr} opacity={p.opacity ?? 0.85}>
+        {dxfLines.map((l, i) => (
+          <line key={`l${i}`}
                 x1={p.offsetX + (l.x1 - bb.minX) * sx}
-                y1={p.offsetY + (bb.maxY - l.y1) * sy}  // CAD Y 朝上 → SVG Y 翻轉
+                y1={p.offsetY + (bb.maxY - l.y1) * sy}
                 x2={p.offsetX + (l.x2 - bb.minX) * sx}
                 y2={p.offsetY + (bb.maxY - l.y2) * sy}
-                stroke="#475569" strokeWidth={Math.max(1, 2 / Math.max(sx, sy))} />
+                stroke={l.color || '#1e293b'} strokeWidth={strokeW} />
         ))}
+        {texts.map((t, i) => {
+          const cx = p.offsetX + (t.x - bb.minX) * sx
+          const cy = p.offsetY + (bb.maxY - t.y) * sy
+          // 給 fontSize 合理上下限,避免 BLOCK 內 INSERT scale 導致字高被砍到看不見、
+          // 或標題大字爆框。下限 12 (可讀),上限 64 (避免遮其他內容)
+          const rawSize = t.height * Math.min(sx, sy)
+          const fontSize = Math.max(12, Math.min(64, rawSize))
+          const rot = t.rotation ? `rotate(${-t.rotation} ${cx} ${cy})` : undefined
+          return (
+            <text key={`t${i}`}
+                  x={cx} y={cy}
+                  fontSize={fontSize}
+                  fill={t.color || '#0f172a'}
+                  fontWeight="500"
+                  transform={rot}
+                  style={{ pointerEvents: 'none', userSelect: 'none' }}>
+              {t.content}
+            </text>
+          )
+        })}
       </g>
     )
   }
@@ -623,7 +667,7 @@ export default function Canvas2D() {
               <circle cx={m.b.x} cy={m.b.y} r={8} fill="#0ea5e9" />
               <text x={(m.a.x + m.b.x) / 2 + 14} y={(m.a.y + m.b.y) / 2 - 14}
                     fontSize={26} fill="#0369a1" fontWeight="600">
-                {(len / 100).toFixed(2)} m
+                {((len * (plan.svgUnitToRealCm || 1)) / 100).toFixed(2)} m
               </text>
             </g>
           )

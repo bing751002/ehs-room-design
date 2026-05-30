@@ -3,6 +3,8 @@ import { usePlanStore } from '../store/planStore.js'
 import { recognizePlanFromImage } from '../lib/aiVisionGemini.js'
 import { recognizePlanTiled } from '../lib/aiVisionTiled.js'
 import { renderDxfToBlobUrl, summarizeDxf } from '../lib/dxfRender.js'
+import { getAiRecognitionImageSource, hasPdfImportImage } from '../lib/dxfPdfBaseLayer.js'
+import { buildGeminiDxfPdfHint } from '../lib/geminiDxfPdfHint.js'
 import { newWallId, newDoorId, newWindowId, newSpaceId } from '../lib/constraints.js'
 
 /**
@@ -26,7 +28,7 @@ export default function AiRecognizeButton() {
 
   async function onRun(useTiled = false) {
     if (!supported) { setErr('此底圖格式不支援'); return }
-    if (useTiled && bl.type !== 'pdf' && bl.type !== 'image') {
+    if (useTiled && bl.type !== 'pdf' && bl.type !== 'image' && !hasPdfImportImage(bl)) {
       setErr('切塊識別只支援 PDF / 圖片底圖'); return
     }
     // 強制提示校準
@@ -61,11 +63,20 @@ export default function AiRecognizeButton() {
     let imageUrl, blobUrlToRevoke = null, dxfHint = null
     if (bl.type === 'dxf') {
       try {
-        const summary = summarizeDxf(bl.dxfLines, bl.bbox, bl.dxfTexts || [])
-        dxfHint = summary.hint
-        const { url } = await renderDxfToBlobUrl(bl.dxfLines, bl.bbox, { texts: bl.dxfTexts || [] })
-        imageUrl = url
-        blobUrlToRevoke = url
+        const sourceLines = bl.previewLines
+        const sourceBbox = bl.bbox
+        const dxfLines = sourceLines?.length ? sourceLines : bl.dxfLines
+        const summary = summarizeDxf(dxfLines, sourceBbox, [])
+        const structuredHint = buildGeminiDxfPdfHint(bl)
+        dxfHint = structuredHint ? `${summary.hint}\n\n${structuredHint}` : summary.hint
+        const pdfImage = getAiRecognitionImageSource(bl)
+        if (pdfImage?.imageUrl) {
+          imageUrl = pdfImage.imageUrl
+        } else {
+          const { url } = await renderDxfToBlobUrl(dxfLines, bl.bbox, { texts: [] })
+          imageUrl = url
+          blobUrlToRevoke = url
+        }
       } catch (e) {
         setBusy(false)
         setErr('DXF 渲染失敗: ' + (e.message || e))
@@ -115,8 +126,9 @@ export default function AiRecognizeButton() {
         structuralColumns = (result.structuralColumns || []).slice(0, COL_HARD_LIMIT)
       }
 
+      const latestPlan = usePlanStore.getState().plan
       setPlan({
-        ...plan, walls, doors, windows, spaces, structuralColumns,
+        ...latestPlan, walls, doors, windows, spaces, structuralColumns,
         rooms: []  // 清掉舊色塊
       })
       const conf = result.confidence ?? 0
@@ -149,7 +161,7 @@ export default function AiRecognizeButton() {
 
   const hasContent = (plan.walls?.length || plan.spaces?.length || plan.doors?.length || plan.windows?.length) > 0
 
-  const canTile = bl.type === 'pdf' || bl.type === 'image'
+  const canTile = bl.type === 'pdf' || bl.type === 'image' || hasPdfImportImage(bl)
 
   return (
     <>

@@ -272,6 +272,18 @@ export function logSpaceBboxes(spaces) {
 }
 
 /**
+ * 坪數過濾:坪數 < MIN_PING 的房間先不顯示。
+ * 小房間 (主管辦公室 2.7P、洽談區 3.1P、顧問室 2.9P、茶水區 2.1P 等) vision 識別
+ * 最不穩 — 常框錯 / 切成上下兩格 / 重複,使用者決定坪數小的先不框。
+ * 從房名抽「X.XP」判斷坪數;抽不到的 (名字沒標 P) 保留不誤殺。
+ */
+export const MIN_PING = 5  // 小於這個坪數不顯示 (可調)
+export function roomPing(name) {
+  const m = (name || '').match(/(\d+(?:\.\d+)?)\s*P/i)
+  return m ? parseFloat(m[1]) : null
+}
+
+/**
  * 把 parsed 的 normalized 0-1 座標換成 plan canvas svg unit 座標。
  * 新格式直接用 baseLayer.placement(跟 Canvas2D / Canvas3D / BaseLayerControls 一致);
  * 舊資料 fallback 用 transform 重算(保留相容)。
@@ -315,11 +327,13 @@ export function finalizeToSvg(parsed, baseLayer, svgBounds) {
       wallIndex: w.wallIndex, t: w.t, sillHeight: 90,
       width: Math.round((w.width_norm || 0.08) * minSide / 100 * 100)
     })),
-    spaces: (parsed.spaces || []).map(s => ({
-      name: s.name, type: s.type || 'custom',
-      color: s.color || '#e2e8f0',
-      vertices: (s.vertices || []).map(v => ({ x: n2x(v.x), y: n2y(v.y) }))
-    })).filter(s => s.vertices.length >= 3),
+    spaces: (parsed.spaces || [])
+      .filter(s => { const p = roomPing(s.name); return p === null || p >= MIN_PING })  // 坪數小的先不顯示
+      .map(s => ({
+        name: s.name, type: s.type || 'custom',
+        color: s.color || '#e2e8f0',
+        vertices: (s.vertices || []).map(v => ({ x: n2x(v.x), y: n2y(v.y) }))
+      })).filter(s => s.vertices.length >= 3),
     structuralColumns: (parsed.structuralColumns || []).map(c => {
       const size = (c.size_norm || 0.015) * minSide
       return {

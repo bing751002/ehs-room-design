@@ -1,6 +1,7 @@
 import { useState } from 'react'
-import { spaceVertices, polygonCenter, polygonVisualCenter, polygonArea, polygonRealArea, computeSnap } from '../../lib/constraints.js'
+import { spaceVertices, polygonCenter, polygonVisualCenter, polygonArea, polygonRealArea, computeSnap, pointInPolygon } from '../../lib/constraints.js'
 import { usePlanStore } from '../../store/planStore.js'
+import { countTextWidth, formatDxfLabel, measureDxfLabelBox, resolveDxfLabelFontSize } from '../../lib/dxfLabel.js'
 
 /**
  * 空間多邊形 — 渲染填色 + 名稱 + 面積。
@@ -23,6 +24,8 @@ export default function SpacePolygon({ space, selected, onSelect }) {
   const plan = usePlanStore.getState().plan
   // 標籤位置:對 L 型/ㄇ 字型用 visual center (內部最遠離邊點),矩形仍是中心
   const center = polygonVisualCenter(vertices)
+  const savedLabelCenter = space.labelPosition || center
+  const labelCenter = space.source === 'dxf' || pointInPolygon(savedLabelCenter, vertices) ? savedLabelCenter : center
   const real = polygonRealArea(vertices, plan)
   const areaM2 = real.m2
   const ping = real.ping
@@ -323,7 +326,7 @@ export default function SpacePolygon({ space, selected, onSelect }) {
       {/* 填色 + 點擊區 */}
       <polygon points={pointsStr}
                fill={space.color ?? '#e2e8f0'}
-               fillOpacity={selected || isMultiSelected ? 0.4 : 0.22}
+               fillOpacity={space.source === 'dxf' ? (selected || isMultiSelected ? 0.12 : 0.035) : (selected || isMultiSelected ? 0.4 : 0.22)}
                stroke={selected ? '#3b82f6' : isMultiSelected ? '#10b981' : 'none'}
                strokeWidth={(selected || isMultiSelected) ? 4 : 0} strokeDasharray="8 6"
                onMouseDown={dragWhole}
@@ -357,16 +360,26 @@ export default function SpacePolygon({ space, selected, onSelect }) {
       })()}
 
       {/* 名稱與面積 — 設計過的卡片式標籤 (白底圓角 + 細節分層) */}
-      <SpaceLabel
-        cx={center.x}
-        cy={center.y}
-        name={space.name}
-        type={space.type}
-        areaM2={areaM2}
-        ping={ping}
-        fontMain={fontMain}
-        fontSub={fontSub}
-      />
+      {space.source === 'dxf' || space.source === 'dxf-pdf' ? (
+        <DxfSpaceLabel
+          cx={labelCenter.x}
+          cy={labelCenter.y}
+          name={space.name}
+          ping={space.ping ?? ping}
+          fontMain={fontMain}
+        />
+      ) : (
+        <SpaceLabel
+          cx={labelCenter.x}
+          cy={labelCenter.y}
+          name={space.name}
+          type={space.type}
+          areaM2={areaM2}
+          ping={ping}
+          fontMain={fontMain}
+          fontSub={fontSub}
+        />
+      )}
 
       {/* 選取時:bbox 縮放手柄 (橘色,8方向) + 頂點手柄 (藍色) + 邊中點加號 */}
       {selected && (
@@ -452,6 +465,27 @@ const TYPE_COLORS = {
   custom:   { bg: '#f1f5f9', fg: '#475569', label: '空間' }
 }
 
+function DxfSpaceLabel({ cx, cy, name, ping, fontMain }) {
+  const text = formatDxfLabel(name, ping)
+  const fontSize = resolveDxfLabelFontSize(fontMain)
+  const { width: w, height: h, strokeWidth } = measureDxfLabelBox(text, fontSize)
+
+  return (
+    <g pointerEvents="none">
+      <rect x={cx - w / 2} y={cy - h / 2}
+            width={w} height={h}
+            fill="white" opacity={0.96}
+            stroke="#475569" strokeWidth={strokeWidth} />
+      <text x={cx} y={cy}
+            fontSize={fontSize} fontWeight="500"
+            fill="#111827" textAnchor="middle" dominantBaseline="central"
+            fontFamily="system-ui, -apple-system, 'PingFang TC', sans-serif">
+        {text}
+      </text>
+    </g>
+  )
+}
+
 function SpaceLabel({ cx, cy, name, type, areaM2, ping, fontMain, fontSub }) {
   const typeStyle = TYPE_COLORS[type] || TYPE_COLORS.custom
   // 估算文字寬度 — 中文字 ≈ fontSize × 1,英數 ≈ × 0.55
@@ -523,12 +557,7 @@ function SpaceLabel({ cx, cy, name, type, areaM2, ping, fontMain, fontSub }) {
 
 // 估算字串「字寬單位」,中文字 1.0,英文/數字/標點 0.5
 function countWidth(s) {
-  let w = 0
-  for (const ch of s) {
-    if (/[\u4e00-\u9fa5\u3000-\u303f]/.test(ch)) w += 1
-    else w += 0.55
-  }
-  return w
+  return countTextWidth(s)
 }
 
 /**

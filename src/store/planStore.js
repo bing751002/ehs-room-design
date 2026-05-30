@@ -116,15 +116,38 @@ export const usePlanStore = create((set, get) => ({
     const { error } = await supabase.from('plans')
       .update({ data: plan, title: meta.title, floor_label: meta.floor_label })
       .eq('id', planId)
-    set({ saving: false })
+    // 標記「我剛剛寫過」— applyRemote 用這個時間窗判斷是否為自己的 echo
+    set({ saving: false, _lastLocalSaveAt: Date.now() })
     if (error) console.error(error)
   },
 
   applyRemote(row) {
     if (!row || row.id !== get().planId) return
+
+    // Echo suppression — 本地剛 save 後 5 秒內,realtime 推回的 99% 是自己的 echo,
+    // 直接用會覆寫掉「巨大 baseLayer (DXF dxfLines/dxfTexts) 寫入過程中的本地新版」。
+    // 缺點:同帳號跨 tab 編輯時,該窗口內遠端變更會被忽略 (單 user 場景可接受)。
+    const lastLocalSave = get()._lastLocalSaveAt || 0
+    if (Date.now() - lastLocalSave < 5000) {
+      console.log('[realtime] 忽略 echo (本地剛 save 過,在 5 秒抑制窗內)')
+      return
+    }
+    // saving 中也忽略 — 寫入沒完成前不接受 remote 蓋寫
+    if (get().saving) {
+      console.log('[realtime] 忽略 echo (本地 save 進行中)')
+      return
+    }
+
+    const incomingPlan = { ...emptyPlan(), ...(row.data || {}) }
+    const currentPlan = get().plan || emptyPlan()
+    if (currentPlan.baseLayer && !incomingPlan.baseLayer) {
+      console.warn('[realtime] remote row has no baseLayer; preserving local uploaded baseLayer')
+      incomingPlan.baseLayer = currentPlan.baseLayer
+    }
+
     set({
       meta: { title: row.title, floor_label: row.floor_label },
-      plan: { ...emptyPlan(), ...(row.data || {}) },
+      plan: incomingPlan,
       remoteVersion: Date.now()
     })
   },
@@ -212,7 +235,13 @@ export const usePlanStore = create((set, get) => ({
   // 整段覆寫 plan (AI 一次回多項變更時用)
   setPlan(newPlan) {
     get()._pushHistory()
-    set({ plan: newPlan })
+    const current = get().plan || emptyPlan()
+    const nextPlan = { ...newPlan }
+    if (current.baseLayer && !nextPlan.baseLayer) {
+      console.warn('[setPlan] incoming plan has no baseLayer; preserving local baseLayer')
+      nextPlan.baseLayer = current.baseLayer
+    }
+    set({ plan: nextPlan })
     get().save()
   },
 

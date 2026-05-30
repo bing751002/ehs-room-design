@@ -25,6 +25,7 @@ import {
   extendSmallSpaces,
   logSpaceBboxes,
   finalizeToSvg,
+  roomPing,
   SYSTEM,
   ai
 } from './aiVisionGemini.js'
@@ -60,6 +61,20 @@ function regionToBase64(bitmap, sx, sy, sw, sh, maxDim = TILE_MAX_DIM) {
   return dataUrl.split(',')[1]
 }
 
+// ── 幾何 helper (mergeSpaces + 大房間修補共用) ──
+function spaceBbox(s) {
+  const xs = s.vertices.map(v => v.x), ys = s.vertices.map(v => v.y)
+  return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)]
+}
+function bboxArea([x0, y0, x1, y1]) { return (x1 - x0) * (y1 - y0) }
+function bboxOverlapRatio(a, b) {
+  const ix = Math.max(0, Math.min(a[2], b[2]) - Math.max(a[0], b[0]))
+  const iy = Math.max(0, Math.min(a[3], b[3]) - Math.max(a[1], b[1]))
+  const inter = ix * iy
+  const minArea = Math.min(bboxArea(a), bboxArea(b))
+  return minArea > 0 ? inter / minArea : 0
+}
+
 /**
  * 合併各塊 spaces。overlap 區會讓同一房間在相鄰兩塊都被框 → 去重。
  *
@@ -69,25 +84,12 @@ function regionToBase64(bitmap, sx, sy, sw, sh, maxDim = TILE_MAX_DIM) {
  */
 function mergeSpaces(allSpaces) {
   const OVERLAP_DUP = 0.45  // 交集佔較小房間 > 45% 視為重複框
-  function bbox(s) {
-    const xs = s.vertices.map(v => v.x), ys = s.vertices.map(v => v.y)
-    return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)]
-  }
-  function area([x0, y0, x1, y1]) { return (x1 - x0) * (y1 - y0) }
-  function overlapRatio(a, b) {
-    const [ax0, ay0, ax1, ay1] = a, [bx0, by0, bx1, by1] = b
-    const ix = Math.max(0, Math.min(ax1, bx1) - Math.max(ax0, bx0))
-    const iy = Math.max(0, Math.min(ay1, by1) - Math.max(ay0, by0))
-    const inter = ix * iy
-    const minArea = Math.min(area(a), area(b))
-    return minArea > 0 ? inter / minArea : 0
-  }
-  const score = s => { const b = bbox(s); return area(b) * s.vertices.length }
+  const score = s => bboxArea(spaceBbox(s)) * s.vertices.length
   const kept = []
   for (const s of allSpaces) {
     if (!s.vertices || s.vertices.length < 3) continue
-    const sb = bbox(s)
-    const dupIdx = kept.findIndex(k => overlapRatio(sb, bbox(k)) > OVERLAP_DUP)
+    const sb = spaceBbox(s)
+    const dupIdx = kept.findIndex(k => bboxOverlapRatio(sb, spaceBbox(k)) > OVERLAP_DUP)
     if (dupIdx < 0) { kept.push(s); continue }
     const k = kept[dupIdx]
     const sTile = s._src === 'tile', kTile = k._src === 'tile'
@@ -216,6 +218,40 @@ ${allLabelNames.map(n => '- ' + n).join('\n')}
     // 全圖粗框是重複 / 巨框的來源,切塊成功時弊大於利;漏掉的少數房間手動加即可。
     mergedSpaces = tileMerged
     console.log(`[切塊識別] 切塊涵蓋 ${tileMerged.length}/${allLabels.length} (${Math.round(coverage * 100)}%) 足夠 → 純用切塊,不補全圖粗框`)
+
+    // 補漏 + 大房間修補:掃全圖那次的每個房間,跟切塊結果比對
+    //  - 切塊完全沒框到 (位置無重疊) → 補上全圖框 (例如這次漏掉的 44人討論)
+    //  - 大房間切塊只框到局部 (半截) → 用全圖完整框取代 (例如 86人共享框半截)
+    //  - 小房間切塊已框到的一律不動 (留切塊精修,不把全圖扁框疊上去)
+    // 補漏判斷用「位置 + 名字」雙重條件。因為全圖那次與切塊那次對同一房間的
+    // y 座標常系統性偏移 (全圖偏低),只靠位置會把切塊其實有框的整排當沒框到重複補。
+    // normName: 去掉 (上)(下)(左)(右)(middle) 等方向後綴 + 空白,只比核心房名 + 坪數
+    const normName = n => (n || '').replace(/[（(].*?[)）]/g, '').replace(/\s+/g, '').trim()
+    const tileNames = new Set(mergedSpaces.map(s => normName(s.name)))
+    const BIG_PING = 10  // ≥ 10 坪才算「大房間」,只有大房間才做「局部→完整」取代
+                         // 用坪數判斷比 normalized 面積準 (17人會計 16.4P 面積才 0.017 會被面積門檻漏掉)
+    const fullSpaces = (full.spaces || []).filter(s => s.vertices?.length >= 3)
+    let added = 0, replaced = 0
+    for (const F of fullSpaces) {
+      const fb = spaceBbox(F)
+      let bestIdx = -1, bestOv = 0
+      mergedSpaces.forEach((T, idx) => {
+        const ov = bboxOverlapRatio(fb, spaceBbox(T))
+        if (ov > bestOv) { bestOv = ov; bestIdx = idx }
+      })
+      if (bestOv < 0.3 && !tileNames.has(normName(F.name))) {
+        // 切塊位置沒框到 + 名字也沒出現過 → 真的漏了 (例如 44人討論),補上
+        F._src = 'full'
+        mergedSpaces.push(F)
+        added++
+      } else if (bestIdx >= 0 && (roomPing(F.name) || 0) >= BIG_PING && bboxArea(spaceBbox(mergedSpaces[bestIdx])) < bboxArea(fb) * 0.7) {
+        // 大房間 (≥10坪) 切塊只框到局部 → 用全圖完整框取代 (17人會計、20人主管、86共享…)
+        F._src = 'full'
+        mergedSpaces[bestIdx] = F
+        replaced++
+      }
+    }
+    if (added || replaced) console.log(`[切塊識別] 補漏 ${added} 個 (切塊沒框到) + 取代 ${replaced} 個大房間局部框`)
   } else {
     // 切塊涵蓋不足 (上半整個失敗之類) → 全圖粗框補空位,位置去重切塊優先
     const fullSpaces = (full.spaces || []).filter(s => s.vertices?.length >= 3)

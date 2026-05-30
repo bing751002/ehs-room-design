@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { usePlanStore } from '../store/planStore.js'
 import ScaleCalibrator from './ScaleCalibrator.jsx'
 import AiRecognizeButton from './AiRecognizeButton.jsx'
+import DxfPdfFrameButton from './DxfPdfFrameButton.jsx'
 
 /**
  * 底圖編輯控制條 — 仿 v3_8:
@@ -32,7 +33,7 @@ export default function BaseLayerControls() {
       drawW: W * fit, drawH: H * fit,
       offsetX: (bounds.w - W * fit) / 2,
       offsetY: (bounds.h - H * fit) / 2,
-      rotation: 0, opacity: 0.6
+      rotation: 0, opacity: 0.85
     }
   }
 
@@ -66,7 +67,7 @@ export default function BaseLayerControls() {
       drawW: W * fit, drawH: H * fit,
       offsetX: (bounds.w - W * fit) / 2,
       offsetY: (bounds.h - H * fit) / 2,
-      rotation: 0, opacity: 0.6
+      rotation: 0, opacity: 0.85
     })
   }
   function changePage(np) {
@@ -100,6 +101,7 @@ export default function BaseLayerControls() {
           </span>
         </button>
         <div className="flex items-center gap-3">
+          <DxfPdfFrameButton />
           <AiRecognizeButton />
           <button onClick={() => setCalibOpen(true)}
                   className={`px-2 py-0.5 rounded border ${baseLayer.scaleCalibration ? 'bg-green-50 border-green-300 text-green-700' : 'bg-amber-50 border-amber-300 text-amber-700'}`}
