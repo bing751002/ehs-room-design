@@ -203,8 +203,7 @@ function WallForm({ wall, onChange, onRemove }) {
   </>)
 }
 
-// 門類型 → 預設寬度
-const DOOR_DEFAULT_WIDTH = { single: 90, double: 180, slide: 150 }
+const DEFAULT_DOOR_WIDTH = 90
 
 function DoorForm({ door, onChange, onRemove }) {
   const type = door.type || 'single'
@@ -216,11 +215,8 @@ function DoorForm({ door, onChange, onRemove }) {
     onChange({ swing: `${nextDir}-${nextSide}` })
   }
   function setType(nextType) {
-    // 切換類型時若 width 還是舊類型的預設,自動帶入新預設
-    const oldDefault = DOOR_DEFAULT_WIDTH[type]
-    const newDefault = DOOR_DEFAULT_WIDTH[nextType]
     const patch = { type: nextType }
-    if (!door.width || door.width === oldDefault) patch.width = newDefault
+    if (!door.width) patch.width = DEFAULT_DOOR_WIDTH
     onChange(patch)
   }
 
@@ -228,16 +224,16 @@ function DoorForm({ door, onChange, onRemove }) {
     <Field label="門類型">
       <div className="grid grid-cols-3 gap-1">
         {[
-          { v: 'single', label: '🚪 單開', w: 90 },
-          { v: 'double', label: '🚪🚪 雙開', w: 180 },
-          { v: 'slide',  label: '⇆ 推拉',  w: 150 }
+          { v: 'single', label: '🚪 單開' },
+          { v: 'double', label: '🚪🚪 雙開' },
+          { v: 'slide',  label: '⇆ 推拉' }
         ].map(o => (
           <button key={o.v} type="button"
                   onClick={() => setType(o.v)}
                   className={`px-2 py-1 rounded border text-[11px] ${
                     type === o.v ? 'bg-brand-700 text-white border-brand-700' : 'bg-white hover:bg-slate-100'
                   }`}
-                  title={`預設寬 ${o.w}cm`}>
+                  title={`預設寬 ${DEFAULT_DOOR_WIDTH}cm`}>
             {o.label}
           </button>
         ))}
@@ -246,14 +242,14 @@ function DoorForm({ door, onChange, onRemove }) {
 
     <Field label="寬度 (cm)">
       <div className="flex gap-1">
-        <input type="number" value={door.width || DOOR_DEFAULT_WIDTH[type]}
+        <input type="number" value={door.width || DEFAULT_DOOR_WIDTH}
                onChange={e => onChange({ width: Number(e.target.value) })}
                className="flex-1 border rounded px-1.5 py-1" />
         <button type="button"
-                onClick={() => onChange({ width: DOOR_DEFAULT_WIDTH[type] })}
+                onClick={() => onChange({ width: DEFAULT_DOOR_WIDTH })}
                 title="重設為預設寬度"
                 className="px-2 text-[11px] bg-slate-100 rounded hover:bg-slate-200">
-          ↺ {DOOR_DEFAULT_WIDTH[type]}
+          ↺ {DEFAULT_DOOR_WIDTH}
         </button>
       </div>
     </Field>

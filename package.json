@@ -7,7 +7,9 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "dwg:dxf": "node scripts/dwg-to-dxf.mjs",
+    "dwg:dxf:libredwg": "node scripts/dwg-to-dxf-libredwg.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.96.0",

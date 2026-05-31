@@ -12,7 +12,7 @@
  * BaseLayerUpload 預設用 convertDwgToDxf。若 DXF 路徑解析品質不佳,
  * 把 import 換成 convertDwgToPdf 即可切換。
  */
-const API_KEY = import.meta.env.VITE_CLOUDCONVERT_API_KEY
+const API_KEY = import.meta.env?.VITE_CLOUDCONVERT_API_KEY || globalThis.__CLOUDCONVERT_API_KEY__ || ''
 export const cloudConvertReady = Boolean(API_KEY)
 
 const API_BASE = 'https://api.cloudconvert.com/v2'

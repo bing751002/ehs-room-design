@@ -521,7 +521,7 @@ export function openingsToPlanDoorsWindows(att, spaces, idFns) {
   const wallId = (si, ei) => (spaces[si] ? `edge-${spaces[si].id}-${ei}` : null)
   const doors = (att?.doors || []).map(d => ({
     id: idFns.door(), wallId: wallId(d.spaceIndex, d.edgeIndex),
-    t: d.t, width: d.width || 90, swing: 'in-right', type: 'single', source: 'dxf',
+    t: d.t, width: 90, swing: 'in-right', type: 'single', source: 'dxf',
   })).filter(d => d.wallId)
   const windows = (att?.windows || []).map(w => ({
     id: idFns.window(), wallId: wallId(w.spaceIndex, w.edgeIndex),

@@ -7,6 +7,8 @@ import {
 
 // 撤銷重做用的歷史堆疊 (只記 plan,不含 meta)
 const HISTORY_LIMIT = 50
+let saveQueue = Promise.resolve()
+let saveRequestSeq = 0
 
 /**
  * Zustand 全域狀態
@@ -110,15 +112,24 @@ export const usePlanStore = create((set, get) => ({
   },
 
   async save() {
-    const { planId, plan, meta } = get()
-    if (!planId) return
+    const requestSeq = ++saveRequestSeq
     set({ saving: true })
-    const { error } = await supabase.from('plans')
-      .update({ data: plan, title: meta.title, floor_label: meta.floor_label })
-      .eq('id', planId)
-    // 標記「我剛剛寫過」— applyRemote 用這個時間窗判斷是否為自己的 echo
-    set({ saving: false, _lastLocalSaveAt: Date.now() })
-    if (error) console.error(error)
+    saveQueue = saveQueue
+      .catch(() => {})
+      .then(async () => {
+        const { planId, plan, meta } = get()
+        if (!planId) return
+        const { error } = await supabase.from('plans')
+          .update({ data: plan, title: meta.title, floor_label: meta.floor_label })
+          .eq('id', planId)
+        // 標記「我剛剛寫過」— applyRemote 用這個時間窗判斷是否為自己的 echo
+        set({ _lastLocalSaveAt: Date.now() })
+        if (error) console.error(error)
+      })
+      .finally(() => {
+        if (requestSeq === saveRequestSeq) set({ saving: false })
+      })
+    return saveQueue
   },
 
   applyRemote(row) {

@@ -106,7 +106,21 @@ export default function BaseLayerUpload() {
         rotation: 0,
         opacity: 0.85
       }
-      if (isDxfPdfPair) {
+      // DXF/DWG 直接抽取的房間 → 套用成可編輯 spaces (零 vision,mm 精度)
+      const rooms = layer.spaceObjects?.rooms?.filter(r => r.vertices) || []
+      if (rooms.length && layer.importMode !== 'dxf-pdf') {
+        const spaces = roomsToPlanSpaces(rooms, layer).map(s => ({ id: newSpaceId(), ...s }))
+        const openings = openingsToPlanOpenings(layer.openingObjects, spaces, layer)
+        const doors = openings.doors.map(d => ({ id: newDoorId(), ...d }))
+        const windows = openings.windows.map(w => ({ id: newWindowId(), ...w }))
+        setPlan({ ...plan, baseLayer: layer, spaces, doors, windows, rooms: [] })
+        const m = layer.spaceObjects.meta
+        alert(
+          `✅ 從 DXF 直接抽出 ${spaces.length} 個房間 (零 vision)\n` +
+          `房名+坪數 ${m.roomNamesFound} 個 / 配到框 ${m.roomsMatched} 個\n\n` +
+          `⚠ 目前用坪數+位置配對,框可能重疊或配錯,需人工校正。`
+        )
+      } else if (isDxfPdfPair) {
         setPlan({
           ...plan,
           baseLayer: layer,
@@ -118,23 +132,6 @@ export default function BaseLayerUpload() {
         })
       } else {
         setBaseLayer(layer)
-      }
-
-      // DXF/DWG 直接抽取的房間 → 套用成可編輯 spaces (零 vision,mm 精度)
-      const rooms = layer.spaceObjects?.rooms?.filter(r => r.vertices) || []
-      if (rooms.length && layer.importMode !== 'dxf-pdf') {
-        const planNow = usePlanStore.getState().plan
-        const spaces = roomsToPlanSpaces(rooms, layer).map(s => ({ id: newSpaceId(), ...s }))
-        const openings = openingsToPlanOpenings(layer.openingObjects, spaces, layer)
-        const doors = openings.doors.map(d => ({ id: newDoorId(), ...d }))
-        const windows = openings.windows.map(w => ({ id: newWindowId(), ...w }))
-        setPlan({ ...planNow, spaces, doors, windows, rooms: [] })
-        const m = layer.spaceObjects.meta
-        alert(
-          `✅ 從 DXF 直接抽出 ${spaces.length} 個房間 (零 vision)\n` +
-          `房名+坪數 ${m.roomNamesFound} 個 / 配到框 ${m.roomsMatched} 個\n\n` +
-          `⚠ 目前用坪數+位置配對,框可能重疊或配錯,需人工校正。`
-        )
       }
     } catch (ex) {
       console.error(ex)
