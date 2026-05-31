@@ -4,3 +4,6 @@ dist
 .env.local
 .DS_Store
 *.log
+
+# Claude Code worktrees (整份 app 副本,不進版控)
+.claude/worktrees/
