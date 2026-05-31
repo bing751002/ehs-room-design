@@ -1,4 +1,5 @@
 import { extractDxfPreviewContent } from './dxfPreview.js'
+import { extractOpeningObjects } from './dxfSpaceExtract.js'
 
 const PING_M2 = 3.305785
 
@@ -201,10 +202,12 @@ function isRoomFrameLayer(layer) {
 function extractFrameCandidates(dxf, previewBbox) {
   const raw = []
   walkClosedPolylines(dxf?.entities || [], dxf?.blocks || {}, (x, y) => ({ x, y }), 0, raw)
-  const pad = Math.max(previewBbox.width, previewBbox.height) * 0.02
+  // Y 翻轉軸 = maxY,把 DXF model space (Y-up) 翻成跟牆 overlay 對齊的方向。
+  // 不可加 pad:框與牆同源於原始 DXF 座標,牆走 transform.point 無 pad;框若多加
+  // pad 會抬高翻轉軸 → 框整體往畫面下方偏 (實測 pad≈1012mm ≈ 29px 下偏)。2026-05-31 修。
   const toClean = point => ({
     x: point.x,
-    y: previewBbox.maxY + pad - (point.y - previewBbox.minY),
+    y: previewBbox.maxY - (point.y - previewBbox.minY),
   })
 
   return raw
@@ -1834,6 +1837,19 @@ function renderDiagnosticsSvg(diagnostics, crop, imageHref) {
   return parts.join('\n')
 }
 
+// 把 DXF 門窗候選 (原始 model 座標) 經 toClean + transform 換成 PDF crop 座標。
+// 走的是跟房間框完全相同的轉換鏈 (toClean → transform.point),所以跟 polygonPdf 對齊。
+function buildCropOpenings(dxf, previewBbox, transform, crop) {
+  let raw
+  try { raw = extractOpeningObjects(dxf) } catch { return { doors: [], windows: [] } }
+  const toClean = p => ({ x: p.x, y: previewBbox.maxY - (p.y - previewBbox.minY) })
+  const map = list => (list || []).map(o => {
+    const c = transform.point(toClean({ x: o.x, y: o.y }))
+    return { x: Number(c.x.toFixed(1)), y: Number(c.y.toFixed(1)), widthCm: o.widthCm, layer: o.layer }
+  }).filter(o => finite(o.x) && finite(o.y) && o.x >= -30 && o.x <= crop.width + 30 && o.y >= -30 && o.y <= crop.height + 30)
+  return { doors: map(raw.doors), windows: map(raw.windows) }
+}
+
 export function buildDxfPdfImportPreview({ dxf, textItems, crop, imageHref = '', pdfColumns = [] }) {
   const preview = extractDxfPreviewContent(dxf)
   const frames = extractFrameCandidates(dxf, preview.bbox)
@@ -1862,6 +1878,7 @@ export function buildDxfPdfImportPreview({ dxf, textItems, crop, imageHref = '',
   const diagnostics = buildUnresolvedDiagnostics(rooms, preview.lines, transform, crop)
   const matchedRoomCount = rooms.filter(room => room.matched).length
   const unresolvedRoomCount = rooms.length - matchedRoomCount
+  const openings = buildCropOpenings(dxf, preview.bbox, transform, crop)
   return {
     alignmentSvg: renderAlignmentSvg(preview.lines, crop, imageHref, transform),
     overlayLines: transformLinesToPdf(preview.lines, transform),
@@ -1870,6 +1887,7 @@ export function buildDxfPdfImportPreview({ dxf, textItems, crop, imageHref = '',
     diagnosticsSvg: renderDiagnosticsSvg(diagnostics, crop, imageHref),
     labels,
     rooms,
+    openings,
     diagnostics,
     meta: {
       labelCount: labels.length,

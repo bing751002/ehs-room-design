@@ -9,7 +9,8 @@ import { polygonVisualCenter } from './constraints.js'
  *   全程待在 model space 的 mm 座標,沒有渲染圖/normalized/viewport 的比例尺誤差。
  *
  * 設計事實 (實測 東森林口22F 圖歸納,見 test-fixtures):
- *   - 中文是 Big5(ANSI_950) → 呼叫端要用 decodeDxfText() 解碼後再 parse
+ *   - 中文視版本可能 Big5(2004 以前) 或 UTF-8(2007+) → 呼叫端用 decodeDxfText()
+ *     自動嗅探解碼後再 parse(不可只信 $DWGCODEPAGE,2018 檔欄位仍殘留 ANSI_950)
  *   - 房名+坪數鎖在 paper space 的匿名 block (座標 0~209,小尺度)
  *   - 房間邊界是現成的封閉 polyline (地面造型 layer,model space,mm)
  *   - 房名 → 房間框靠「坪數當鑰匙 + paper→model 位置配準」綁定
@@ -45,19 +46,40 @@ function cleanText(s) {
     .replace(/\\P/g, ' ').replace(/\\[A-Za-z][^;]*;/g, '').replace(/[{}]/g, '').trim()
 }
 
-/** Big5 解碼 (AutoCAD 2000~2010 中文 DXF)。呼叫端拿 ArrayBuffer/Uint8Array。 */
+/**
+ * DXF 中文解碼。呼叫端拿 ArrayBuffer/Uint8Array。
+ *
+ * 不信任 $DWGCODEPAGE:AutoCAD 2007+ (DXF 版本 AC1021/2018 AC1032…) 內部一律存
+ * UTF-8,但 $DWGCODEPAGE 仍殘留舊的 ANSI_950/ANSI_936 欄位,直接照欄位用 Big5
+ * 會把整份 UTF-8 layer 名解成亂碼 → 牆線 layer 白名單全 miss → 房間框抽不到。
+ * 改成嗅探:UTF-8 / Big5 / GBK 各解一次,取「替換字元 (U+FFFD) 最少」的結果。
+ * UTF-8 對非法序列會產生 U+FFFD,Big5/GBK 幾乎不會,所以亂碼解法會被自然淘汰。
+ * codepage 欄位只在分數接近時當 tie-breaker。
+ */
 export function decodeDxfText(buf) {
   const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf)
-  // 先看 $DWGCODEPAGE,沒有就賭 big5 (台灣 DWG 幾乎都是)
   const head = new TextDecoder('latin1').decode(bytes.slice(0, 4000))
   const m = head.match(/\$DWGCODEPAGE\s*\n\s*3\s*\n([^\n\r]+)/)
   const cp = (m ? m[1].trim() : '').toLowerCase()
-  const enc = /950|big5/.test(cp) ? 'big5'
+  const hinted = /950|big5/.test(cp) ? 'big5'
     : /936|gbk|gb2312/.test(cp) ? 'gbk'
     : /utf|65001/.test(cp) ? 'utf-8'
-    : 'big5'  // 預設台灣 Big5
-  try { return new TextDecoder(enc).decode(bytes) }
-  catch { return new TextDecoder('big5').decode(bytes) }
+    : null
+
+  const candidates = ['utf-8', 'big5', 'gbk']
+  let best = null
+  for (const enc of candidates) {
+    let text
+    try { text = new TextDecoder(enc, { fatal: false }).decode(bytes) }
+    catch { continue }
+    // 替換字元越少越好;相同時偏好 codepage 欄位指定的編碼
+    const replacements = (text.match(/�/g) || []).length
+    const score = replacements - (enc === hinted ? 0.5 : 0)
+    if (!best || score < best.score) best = { enc, text, score, replacements }
+  }
+  // 全部失敗的極端情況才退回 Big5
+  if (!best) return new TextDecoder('big5').decode(bytes)
+  return best.text
 }
 
 /**

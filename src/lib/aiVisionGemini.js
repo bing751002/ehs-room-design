@@ -1,11 +1,8 @@
 /**
- * AI 識別圖紙生戶型 — Gemini 版（aiVision.js 的並排實驗版本）
+ * AI 識別圖紙 — Gemini vision。提供 SYSTEM prompt + callGeminiVision + finalizeToSvg
+ * 等共用 helper,給 aiVisionTiled.js 的切塊流程使用。
  *
- * 同樣策略:
- *  - AI 不估算 cm，只回 normalized [0,1] 座標
- *  - 程式碼用 baseLayer.placement 把 0-1 換成 svg unit
- *
- * 切換: AiRecognizeButton.jsx 的 import 指向哪個檔
+ * 策略:AI 不估算 cm,只回 normalized [0,1] 座標;程式碼用 baseLayer.placement 換成 svg unit。
  */
 import { GoogleGenAI } from '@google/genai'
 
@@ -122,64 +119,8 @@ export const SYSTEM = `你是嚴謹的建築平面圖辨識引擎。**完整 ≥
 8. kind: exterior / interior / partition。
 `
 
-/**
- * @param {Object} args
- *   - imageUrl: 底圖 URL
- *   - bounds: plan.bounds {w, h}
- *   - baseLayer: 底圖物件 (要 width/height/placement 或 transform 來換座標)
- *   - svgBounds: { w, h }  畫布 SVG 座標尺寸 (cm)
- *   - dxfHint?: string  DXF 結構摘要 (Hybrid 模式用,見 lib/dxfRender.js summarizeDxf)
- */
-export async function recognizePlanFromImage({ imageUrl, bounds, baseLayer, svgBounds, dxfHint }) {
-  if (!ai) throw new Error('Gemini API Key 未設定')
-
-  const res = await fetch(imageUrl)
-  if (!res.ok) throw new Error('底圖下載失敗 ' + res.status)
-  const blob = await res.blob()
-  const mimeType = blob.type || 'image/png'
-  const buf = await blob.arrayBuffer()
-  const bytes = new Uint8Array(buf)
-  let bin = ''
-  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i])
-  const base64 = btoa(bin)
-
-  const hintBlock = dxfHint
-    ? `\n${dxfHint}\n\n# 你的優勢\n這張圖是從 CAD 向量直接渲染 (純黑線白底,無背景雜訊),搭配上面的 layer 摘要,你的判斷應該比看一般掃描圖更有把握。`
-    : ''
-
-  const userPrompt = `看這張平面圖,辨識牆/門/窗/空間/柱位。
-
-# 圖像尺寸
-${baseLayer.width || '未知'} × ${baseLayer.height || '未知'} pixels
-
-# 重要
-- 用 normalized 0-1 座標,**不要**換算 cm。
-- 我會自己把 0-1 換成最終座標。
-- 你只要老老實實看圖,看到什麼說什麼。
-${hintBlock}
-請直接輸出 JSON。`
-
-  const parsed = await callGeminiVision(base64, mimeType, userPrompt)
-
-  const labels = parsed.detected_labels || []
-  const spaces = parsed.spaces || []
-  console.log('[AI 識別] detected_labels:', labels.length, labels.map(l => l.name))
-  console.log('[AI 識別] spaces:', spaces.length, spaces.map(s => s.name))
-  if (labels.length > 0 && spaces.length < labels.length * 0.7) {
-    console.warn(`[AI 識別] ⚠ 列了 ${labels.length} 個 labels 但只給 ${spaces.length} 個 spaces,AI 可能漏畫多邊形`)
-  }
-  if (labels.length < 8) {
-    console.warn(`[AI 識別] ⚠ 只列出 ${labels.length} 個 labels (典型工作圖 15-30 個),可能漏掃`)
-  }
-
-  extendSmallSpaces(spaces)
-  logSpaceBboxes(spaces)
-
-  return finalizeToSvg(parsed, baseLayer, svgBounds)
-}
-
 // ════════════════════════════════════════════════════════════════════
-// 共用 helper (recognizePlanFromImage 與 aiVisionTiled.js 切塊版共用)
+// 共用 helper (aiVisionTiled.js 切塊版 + finalize 用)
 // ════════════════════════════════════════════════════════════════════
 
 /**
@@ -288,7 +229,10 @@ export function roomPing(name) {
  * 新格式直接用 baseLayer.placement(跟 Canvas2D / Canvas3D / BaseLayerControls 一致);
  * 舊資料 fallback 用 transform 重算(保留相容)。
  */
-export function finalizeToSvg(parsed, baseLayer, svgBounds) {
+export function finalizeToSvg(parsed, baseLayer, svgBounds, { keepSpace } = {}) {
+  // keepSpace(ping): 自訂房間過濾。預設「坪數小的先不顯示」(全量識別用);
+  // 小房間模式傳 (p => p !== null && p <= max) 反過來只留小房間。
+  const keep = keepSpace || (p => p === null || p >= MIN_PING)
   const W = baseLayer.width || svgBounds.w
   const H = baseLayer.height || svgBounds.h
   let p = baseLayer.placement
@@ -328,7 +272,7 @@ export function finalizeToSvg(parsed, baseLayer, svgBounds) {
       width: Math.round((w.width_norm || 0.08) * minSide / 100 * 100)
     })),
     spaces: (parsed.spaces || [])
-      .filter(s => { const p = roomPing(s.name); return p === null || p >= MIN_PING })  // 坪數小的先不顯示
+      .filter(s => keep(roomPing(s.name)))
       .map(s => ({
         name: s.name, type: s.type || 'custom',
         color: s.color || '#e2e8f0',

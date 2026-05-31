@@ -55,6 +55,7 @@ export function composeDxfPdfBaseLayer({ dxfLayer, pdfLayer, pdfImportData, impo
       preview: importPreview ? {
         meta: importPreview.meta || {},
         rooms: importPreview.rooms || [],
+        openings: importPreview.openings || { doors: [], windows: [] },
         overlayBbox,
       } : null,
     },

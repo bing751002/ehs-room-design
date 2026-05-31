@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { usePlanStore } from '../store/planStore.js'
-import { newSpaceId } from '../lib/constraints.js'
-import { buildDxfPdfSpacesFromBaseLayer } from '../lib/dxfPdfDeterministicImport.js'
+import { newSpaceId, newDoorId, newWindowId } from '../lib/constraints.js'
+import { buildDxfPdfSpacesFromBaseLayer, openingsToPlanDoorsWindows } from '../lib/dxfPdfDeterministicImport.js'
 
 export default function DxfPdfFrameButton() {
   const plan = usePlanStore(s => s.plan)
@@ -20,21 +20,25 @@ export default function DxfPdfFrameButton() {
     }
     console.info('[DXF+PDF deterministic import]', result.meta)
     const spaces = result.spaces.map(space => ({ id: newSpaceId(), ...space }))
+    // 門窗 (spaceIndex/edgeIndex 參照) → 指派 id + 組 wallId,與 AI 小房間共用同一函式
+    const { doors, windows } = openingsToPlanDoorsWindows(
+      { doors: result.doors, windows: result.windows }, spaces, { door: newDoorId, window: newWindowId }
+    )
     const latestPlan = usePlanStore.getState().plan
     setPlan({
       ...latestPlan,
       spaces,
       rooms: [],
       walls: [],
-      doors: [],
-      windows: [],
+      doors,
+      windows,
       importPreview: {
         source: result.source,
         meta: result.meta,
         appliedAt: Date.now(),
       },
     })
-    alert(`已用 DXF+PDF 直接建立 ${spaces.length} 個房間框；未配到的開放區先保留人工/後續演算法處理。`)
+    alert(`已用 DXF+PDF 直接建立 ${spaces.length} 個房間框 / ${doors.length} 門 / ${windows.length} 窗；小房間用「🏠 AI 補小房間」補。`)
   }
 
   const matched = baseLayer.pdfImport?.preview?.meta?.matchedRoomCount ?? 0

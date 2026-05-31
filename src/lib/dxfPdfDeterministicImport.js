@@ -460,6 +460,76 @@ function correctGlobalSpaceOffset(spaces, baseLayer, bounds) {
   }
 }
 
+// crop 像素座標 → 畫布 svg 座標的 placement 參數,跟 importRoomsToSpaces 算法一致,
+// 確保門窗跟房間框落在同一座標系。
+function cropToSvgPlacement(crop, placement, bounds) {
+  const canvasBounds = bounds || { w: 4000, h: 3000 }
+  const ok = placement && Number.isFinite(placement.offsetX) && Number.isFinite(placement.offsetY) &&
+    Number.isFinite(placement.drawW) && Number.isFinite(placement.drawH) && placement.drawW > 0 && placement.drawH > 0
+  const fit = ok ? null : Math.min((canvasBounds.w * 0.9) / crop.width, (canvasBounds.h * 0.9) / crop.height)
+  const drawW = ok ? placement.drawW : crop.width * fit
+  const drawH = ok ? placement.drawH : crop.height * fit
+  const offsetX = ok ? placement.offsetX : (canvasBounds.w - drawW) / 2
+  const offsetY = ok ? placement.offsetY : (canvasBounds.h - drawH) / 2
+  return { offsetX, offsetY, drawW, drawH }
+}
+
+// 把 (crop 座標的) 門窗候選貼到房間框的邊上。回傳用 spaceIndex+edgeIndex 參照
+// (id 在 button 才指派),門 maxDist 70、窗 50 (svg 單位 = cm)。
+// export 給「🏠 AI 補小房間」共用:小房間框也要貼同一批 DXF 門窗。
+export function attachOpeningsToSpaces(openings, spaces, crop, placement, bounds) {
+  const empty = { doors: [], windows: [] }
+  if (!openings || !spaces.length) return empty
+  const { offsetX, offsetY, drawW, drawH } = cropToSvgPlacement(crop, placement, bounds)
+  const toSvg = p => ({ x: offsetX + (p.x / crop.width) * drawW, y: offsetY + (p.y / crop.height) * drawH })
+  const edges = []
+  spaces.forEach((s, si) => {
+    const vs = s.vertices || []
+    for (let i = 0; i < vs.length; i++) {
+      const a = vs[i], b = vs[(i + 1) % vs.length]
+      edges.push({ si, ei: i, x1: a.x, y1: a.y, x2: b.x, y2: b.y })
+    }
+  })
+  const attach = (list, maxDist) => {
+    const used = []
+    const out = []
+    for (const o of (list || [])) {
+      const p = toSvg(o)
+      let best = null
+      for (const e of edges) {
+        const dx = e.x2 - e.x1, dy = e.y2 - e.y1, len2 = dx * dx + dy * dy
+        if (!len2) continue
+        const t = ((p.x - e.x1) * dx + (p.y - e.y1) * dy) / len2
+        if (t < 0.03 || t > 0.97) continue
+        const dist = Math.hypot(p.x - (e.x1 + dx * t), p.y - (e.y1 + dy * t))
+        if (!best || dist < best.dist) best = { e, t, dist }
+      }
+      if (!best || best.dist > maxDist) continue
+      if (used.some(u => u.si === best.e.si && u.ei === best.e.ei && Math.abs(u.t - best.t) < 0.04)) continue
+      used.push({ si: best.e.si, ei: best.e.ei, t: best.t })
+      out.push({ spaceIndex: best.e.si, edgeIndex: best.e.ei, t: Number(best.t.toFixed(3)), width: Math.round(o.widthCm || 90) })
+    }
+    return out
+  }
+  return { doors: attach(openings.doors, 70), windows: attach(openings.windows, 50) }
+}
+
+// attach 結果 (spaceIndex/edgeIndex 參照) + 已指派 id 的 spaces → plan 的 doors/windows。
+// wallId = space 邊 id (`edge-空間id-邊號`,renderer 已支援)。idFns = { door, window }。
+// DxfPdfFrameButton (大房間) 與 AiRecognizeButton (AI 小房間) 共用,統一門窗 schema。
+export function openingsToPlanDoorsWindows(att, spaces, idFns) {
+  const wallId = (si, ei) => (spaces[si] ? `edge-${spaces[si].id}-${ei}` : null)
+  const doors = (att?.doors || []).map(d => ({
+    id: idFns.door(), wallId: wallId(d.spaceIndex, d.edgeIndex),
+    t: d.t, width: d.width || 90, swing: 'in-right', type: 'single', source: 'dxf',
+  })).filter(d => d.wallId)
+  const windows = (att?.windows || []).map(w => ({
+    id: idFns.window(), wallId: wallId(w.spaceIndex, w.edgeIndex),
+    t: w.t, width: w.width || 150, sillHeight: 90, source: 'dxf',
+  })).filter(w => w.wallId)
+  return { doors, windows }
+}
+
 export function buildDxfPdfSpacesFromBaseLayer(baseLayer, bounds) {
   const crop = baseLayer?.pdfImport?.crop
   const rooms = baseLayer?.pdfImport?.preview?.rooms || []
@@ -467,19 +537,36 @@ export function buildDxfPdfSpacesFromBaseLayer(baseLayer, bounds) {
     return {
       source: 'dxf-pdf-deterministic',
       spaces: [],
+      doors: [],
+      windows: [],
       meta: { totalRooms: 0, appliedRooms: 0, skippedRooms: 0 },
     }
   }
 
-  const rawSpaces = importRoomsToSpaces(rooms, crop, bounds, baseLayer.placement, baseLayer.previewLines)
+  // 小房間 (≤ SMALL_MAX 坪) DXF 幾何框不準,改交給「🏠 AI 補小房間」處理,
+  // deterministic 這邊直接不框 (反正框錯)。坪數抓不到的不誤殺、照框。
+  const SMALL_MAX = 6
+  const bigRooms = rooms.filter(room => {
+    const p = room.matchedPing ?? room.ping
+    return !(Number.isFinite(p) && p <= SMALL_MAX)
+  })
+  const rawSpaces = importRoomsToSpaces(bigRooms, crop, bounds, baseLayer.placement, baseLayer.previewLines)
   const { spaces, correction } = correctGlobalSpaceOffset(rawSpaces, baseLayer, bounds)
+  const { doors, windows } = attachOpeningsToSpaces(
+    baseLayer?.pdfImport?.preview?.openings, spaces, crop, baseLayer.placement, bounds
+  )
   return {
     source: 'dxf-pdf-deterministic',
     spaces,
+    doors,
+    windows,
     meta: {
       totalRooms: rooms.length,
       appliedRooms: spaces.length,
       skippedRooms: Math.max(0, rooms.length - spaces.length),
+      smallRoomsForAi: rooms.length - bigRooms.length,
+      doorCount: doors.length,
+      windowCount: windows.length,
       postAlignmentCorrection: correction,
     },
   }

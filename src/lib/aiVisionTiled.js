@@ -102,17 +102,18 @@ function mergeSpaces(allSpaces) {
 }
 
 /**
- * 切塊主流程。介面比照 recognizePlanFromImage,多了 tile 參數 + onProgress。
+ * 切塊主流程 — 全圖掃房間清單 + 牆柱,再 2×2 切塊放大精修房間多邊形。
  *
  * @param {Object} args
- *   - imageUrl, baseLayer, svgBounds, dxfHint  (同 recognizePlanFromImage)
+ *   - imageUrl, baseLayer, svgBounds, dxfHint
  *   - tilesX, tilesY: 切幾塊 (預設 2×2)
  *   - overlap: 塊間重疊比例 (預設 0.12 = 12%)
  *   - onProgress(stage, msg): 進度回報
+ *   - keepSpace(ping): 房間過濾 (小房間模式只留 ≤N 坪)
  */
 export async function recognizePlanTiled({
   imageUrl, baseLayer, svgBounds, dxfHint,
-  tilesX = 2, tilesY = 2, overlap = 0.12, onProgress
+  tilesX = 2, tilesY = 2, overlap = 0.12, onProgress, keepSpace
 }) {
   if (!ai) throw new Error('Gemini API Key 未設定')
   const report = (msg) => { onProgress?.(msg); console.log('[切塊識別]', msg) }
@@ -276,5 +277,5 @@ ${allLabelNames.map(n => '- ' + n).join('\n')}
     spaces: mergedSpaces
   }
   report(`完成 — ${mergedSpaces.length} 房間 (預期 ${allLabels.length})`)
-  return finalizeToSvg(parsed, baseLayer, svgBounds)
+  return finalizeToSvg(parsed, baseLayer, svgBounds, { keepSpace })
 }
