@@ -81,7 +81,7 @@ function WallSegments({ wall, openings, selected, onSelect, plan }) {
   // op.width 是 cm,len 是 svg unit,要先換算
   const holes = []
   for (const op of openings) {
-    const widthSvg = (op.width || 0) / f
+    const widthSvg = Number.isFinite(op.renderWidthSvg) ? op.renderWidthSvg : (op.width || 0) / f
     const halfW = widthSvg / 2
     const tS = Math.max(0, op.t - halfW / len)
     const tE = Math.min(1, op.t + halfW / len)
@@ -182,7 +182,8 @@ function DoorGlyph({ wall, door, selected, onSelect, plan }) {
   const nx = -uy, ny = ux   // 法向量 (向左 90°)
 
   const type = door.type || 'single'
-  const color = selected ? '#3b82f6' : (door.isExit ? '#dc2626' : door.isEntry ? '#16a34a' : '#475569')
+  const importedDoor = door.source === 'vision-door' || door.source === 'dxf-door-candidate-fallback' || door.source === 'dxf'
+  const color = selected ? '#3b82f6' : (door.isExit ? '#dc2626' : door.isEntry ? '#16a34a' : importedDoor ? '#2563eb' : '#475569')
 
   return (
     <g onMouseDown={(e) => { e.stopPropagation(); onSelect?.(door.id, 'door') }}

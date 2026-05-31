@@ -1845,9 +1845,33 @@ function buildCropOpenings(dxf, previewBbox, transform, crop) {
   const toClean = p => ({ x: p.x, y: previewBbox.maxY - (p.y - previewBbox.minY) })
   const map = list => (list || []).map(o => {
     const c = transform.point(toClean({ x: o.x, y: o.y }))
-    return { x: Number(c.x.toFixed(1)), y: Number(c.y.toFixed(1)), widthCm: o.widthCm, layer: o.layer }
+    return { x: Number(c.x.toFixed(1)), y: Number(c.y.toFixed(1)), widthCm: o.widthCm, layer: o.layer, block: o.block, rotation: o.rotation }
   }).filter(o => finite(o.x) && finite(o.y) && o.x >= -30 && o.x <= crop.width + 30 && o.y >= -30 && o.y <= crop.height + 30)
   return { doors: map(raw.doors), windows: map(raw.windows) }
+}
+
+function buildCandidateCells(frames, transform, crop) {
+  return (frames || [])
+    .map((frame, index) => {
+      const polygonPdf = pdfPolygonFromClean(frame.polygonClean, transform)
+      const box = bboxOf(polygonPdf)
+      return {
+        id: `cell-${index + 1}`,
+        index: index + 1,
+        layer: frame.layer || '',
+        frameId: frame.id,
+        framePing: Number(frame.ping.toFixed(2)),
+        polygonPdf,
+        bboxPdf: box,
+      }
+    })
+    .filter(cell => (
+      cell.polygonPdf.length >= 3 &&
+      cell.bboxPdf.maxX >= -30 &&
+      cell.bboxPdf.minX <= crop.width + 30 &&
+      cell.bboxPdf.maxY >= -30 &&
+      cell.bboxPdf.minY <= crop.height + 30
+    ))
 }
 
 export function buildDxfPdfImportPreview({ dxf, textItems, crop, imageHref = '', pdfColumns = [] }) {
@@ -1879,6 +1903,7 @@ export function buildDxfPdfImportPreview({ dxf, textItems, crop, imageHref = '',
   const matchedRoomCount = rooms.filter(room => room.matched).length
   const unresolvedRoomCount = rooms.length - matchedRoomCount
   const openings = buildCropOpenings(dxf, preview.bbox, transform, crop)
+  const candidateCells = buildCandidateCells(frames, transform, crop)
   return {
     alignmentSvg: renderAlignmentSvg(preview.lines, crop, imageHref, transform),
     overlayLines: transformLinesToPdf(preview.lines, transform),
@@ -1887,11 +1912,13 @@ export function buildDxfPdfImportPreview({ dxf, textItems, crop, imageHref = '',
     diagnosticsSvg: renderDiagnosticsSvg(diagnostics, crop, imageHref),
     labels,
     rooms,
+    candidateCells,
     openings,
     diagnostics,
     meta: {
       labelCount: labels.length,
       frameCount: frames.length,
+      candidateCellCount: candidateCells.length,
       matchedRoomCount,
       unresolvedRoomCount,
       estimatedRoomCount: rooms.filter(room => room.geometrySource === 'pdf-open-zone-estimate').length,

@@ -99,7 +99,9 @@ export function openingEnds(wall, opening, plan = null) {
   const len = wallLength(wall)
   if (len === 0) return null
   const f = plan?.svgUnitToRealCm || 1
-  const widthInSvgUnit = (opening.width || 0) / f
+  const widthInSvgUnit = Number.isFinite(opening.renderWidthSvg)
+    ? opening.renderWidthSvg
+    : (opening.width || 0) / f
   const halfW = widthInSvgUnit / 2
   const t1 = Math.max(0, opening.t - halfW / len)
   const t2 = Math.min(1, opening.t + halfW / len)

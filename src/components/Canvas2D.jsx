@@ -33,6 +33,11 @@ function snapToOrtho(p1, p2, force) {
   return p2
 }
 
+function shouldDisplayBaseLayerLine(line) {
+  const layer = String(line?.layer || '')
+  return !layer.includes('地面造型') && !layer.includes('天花造型')
+}
+
 /**
  * 底圖渲染 — v3_8 風格:
  *   底圖 placement 用 4 個 cm 值 (offsetX, offsetY, drawW, drawH) 直接畫到 SVG。
@@ -65,7 +70,8 @@ function BaseLayerRender({ baseLayer, svgW, svgH }) {
   const cy = p.offsetY + p.drawH / 2
   const transformStr = p.rotation ? `rotate(${p.rotation} ${cx} ${cy})` : undefined
 
-  const dxfLines = baseLayer.previewLines?.length ? baseLayer.previewLines : baseLayer.dxfLines
+  const dxfLines = (baseLayer.previewLines?.length ? baseLayer.previewLines : baseLayer.dxfLines) || []
+  const visibleDxfLines = dxfLines.filter(shouldDisplayBaseLayerLine)
   if (baseLayer.type === 'dxf' && dxfLines?.length) {
     const bb = baseLayer.bbox
     const sx = p.drawW / (bb.width || 1)
@@ -80,7 +86,7 @@ function BaseLayerRender({ baseLayer, svgW, svgH }) {
                  opacity={p.opacity ?? 0.72}
                  preserveAspectRatio="none" />
           <g fill="none" opacity="0.88">
-            {dxfLines.map((l, i) => (
+            {visibleDxfLines.map((l, i) => (
               <line key={`pdf-dxf-l${i}`}
                     x1={p.offsetX + (l.x1 - bb.minX) * sx}
                     y1={p.offsetY + (l.y1 - bb.minY) * sy}
@@ -95,7 +101,7 @@ function BaseLayerRender({ baseLayer, svgW, svgH }) {
     const texts = baseLayer.dxfTexts || []
     return (
       <g transform={transformStr} opacity={p.opacity ?? 0.85}>
-        {dxfLines.map((l, i) => (
+        {visibleDxfLines.map((l, i) => (
           <line key={`l${i}`}
                 x1={p.offsetX + (l.x1 - bb.minX) * sx}
                 y1={p.offsetY + (bb.maxY - l.y1) * sy}

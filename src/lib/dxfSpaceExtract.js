@@ -480,6 +480,27 @@ function isDoorCandidateLayer(layer) {
   return hasWord(layer, DOOR_WORD) && !hasWord(layer, NUMBER_WORD)
 }
 
+function isDoorCandidateBlock(name) {
+  const value = String(name || '')
+  if (/^doorlab/i.test(value)) return false
+  if (/^(?:\*U|A\$C)/i.test(value)) return true
+  return /door/i.test(value) || hasWord(value, DOOR_WORD)
+}
+
+function isDoorCandidateShape(bb) {
+  if (!bb) return false
+  const width = Math.abs(bb.maxX - bb.minX)
+  const height = Math.abs(bb.maxY - bb.minY)
+  const minDim = Math.min(width, height)
+  const maxDim = Math.max(width, height)
+  if (!Number.isFinite(width) || !Number.isFinite(height) || minDim <= 0 || maxDim <= 0) return false
+  const aspect = maxDim / minDim
+  // Some DWGs put long thin door guide/leaf lines on the door layer.
+  // They are not complete door symbols and create stable false doors when snapped to room edges.
+  if (aspect > 8 && minDim < 300 && maxDim > 1500) return false
+  return true
+}
+
 function isWindowCandidateLayer(layer) {
   const s = String(layer || '')
   if (s.includes(NUMBER_WORD)) return false
@@ -562,14 +583,19 @@ function walkOpeningEntities(entities, blocks, tf, depth, sink) {
     if (e.type === 'INSERT' && blocks[e.name]) {
       const block = blocks[e.name]
       const childTf = localInsertTransform(e, block, tf)
-      if (isDoorCandidateLayer(layer) && !/^doorlab/i.test(String(e.name || ''))) {
+      if (isDoorCandidateLayer(layer) && isDoorCandidateBlock(e.name)) {
         const pts = entityPoints(e, tf, blocks)
         const bb = bboxFromPoints(pts)
         if (bb) {
+          if (!isDoorCandidateShape(bb)) {
+            walkOpeningEntities(block.entities, blocks, childTf, depth + 1, sink)
+            continue
+          }
           const widthModel = Math.max(bb.width, bb.height)
           sink.doors.push({
             x: (bb.minX + bb.maxX) / 2,
             y: (bb.minY + bb.maxY) / 2,
+            bbox: bb,
             widthCm: Math.max(60, Math.min(180, widthModel / 10)),
             layer,
             block: e.name,

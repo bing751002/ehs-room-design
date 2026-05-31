@@ -477,9 +477,11 @@ function cropToSvgPlacement(crop, placement, bounds) {
 // 把 (crop 座標的) 門窗候選貼到房間框的邊上。回傳用 spaceIndex+edgeIndex 參照
 // (id 在 button 才指派),門 maxDist 70、窗 50 (svg 單位 = cm)。
 // export 給「🏠 AI 補小房間」共用:小房間框也要貼同一批 DXF 門窗。
-export function attachOpeningsToSpaces(openings, spaces, crop, placement, bounds) {
+export function attachOpeningsToSpaces(openings, spaces, crop, placement, bounds, options = {}) {
   const empty = { doors: [], windows: [] }
   if (!openings || !spaces.length) return empty
+  const doorMaxDist = finite(options.doorMaxDist) ? options.doorMaxDist : 70
+  const windowMaxDist = finite(options.windowMaxDist) ? options.windowMaxDist : 50
   const { offsetX, offsetY, drawW, drawH } = cropToSvgPlacement(crop, placement, bounds)
   const toSvg = p => ({ x: offsetX + (p.x / crop.width) * drawW, y: offsetY + (p.y / crop.height) * drawH })
   const edges = []
@@ -511,7 +513,7 @@ export function attachOpeningsToSpaces(openings, spaces, crop, placement, bounds
     }
     return out
   }
-  return { doors: attach(openings.doors, 70), windows: attach(openings.windows, 50) }
+  return { doors: attach(openings.doors, doorMaxDist), windows: attach(openings.windows, windowMaxDist) }
 }
 
 // attach 結果 (spaceIndex/edgeIndex 參照) + 已指派 id 的 spaces → plan 的 doors/windows。
@@ -519,9 +521,18 @@ export function attachOpeningsToSpaces(openings, spaces, crop, placement, bounds
 // DxfPdfFrameButton (大房間) 與 AiRecognizeButton (AI 小房間) 共用,統一門窗 schema。
 export function openingsToPlanDoorsWindows(att, spaces, idFns) {
   const wallId = (si, ei) => (spaces[si] ? `edge-${spaces[si].id}-${ei}` : null)
+  const edgeRenderWidth = item => {
+    const space = spaces[item.spaceIndex]
+    const vertices = space?.vertices || []
+    const a = vertices[item.edgeIndex]
+    const b = vertices[(item.edgeIndex + 1) % vertices.length]
+    if (!a || !b) return undefined
+    const len = Math.hypot(b.x - a.x, b.y - a.y)
+    return Number.isFinite(len) && len > 0 ? Math.max(28, Math.min(72, len * 0.28)) : undefined
+  }
   const doors = (att?.doors || []).map(d => ({
     id: idFns.door(), wallId: wallId(d.spaceIndex, d.edgeIndex),
-    t: d.t, width: 90, swing: 'in-right', type: 'single', source: 'dxf',
+    t: d.t, width: 90, renderWidthSvg: edgeRenderWidth(d), swing: 'in-right', type: 'single', source: 'dxf',
   })).filter(d => d.wallId)
   const windows = (att?.windows || []).map(w => ({
     id: idFns.window(), wallId: wallId(w.spaceIndex, w.edgeIndex),
@@ -543,14 +554,7 @@ export function buildDxfPdfSpacesFromBaseLayer(baseLayer, bounds) {
     }
   }
 
-  // 小房間 (≤ SMALL_MAX 坪) DXF 幾何框不準,改交給「🏠 AI 補小房間」處理,
-  // deterministic 這邊直接不框 (反正框錯)。坪數抓不到的不誤殺、照框。
-  const SMALL_MAX = 6
-  const bigRooms = rooms.filter(room => {
-    const p = room.matchedPing ?? room.ping
-    return !(Number.isFinite(p) && p <= SMALL_MAX)
-  })
-  const rawSpaces = importRoomsToSpaces(bigRooms, crop, bounds, baseLayer.placement, baseLayer.previewLines)
+  const rawSpaces = importRoomsToSpaces(rooms, crop, bounds, baseLayer.placement, baseLayer.previewLines)
   const { spaces, correction } = correctGlobalSpaceOffset(rawSpaces, baseLayer, bounds)
   const { doors, windows } = attachOpeningsToSpaces(
     baseLayer?.pdfImport?.preview?.openings, spaces, crop, baseLayer.placement, bounds
@@ -564,7 +568,7 @@ export function buildDxfPdfSpacesFromBaseLayer(baseLayer, bounds) {
       totalRooms: rooms.length,
       appliedRooms: spaces.length,
       skippedRooms: Math.max(0, rooms.length - spaces.length),
-      smallRoomsForAi: rooms.length - bigRooms.length,
+      smallRoomsForAi: 0,
       doorCount: doors.length,
       windowCount: windows.length,
       postAlignmentCorrection: correction,

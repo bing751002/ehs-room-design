@@ -6,6 +6,8 @@ import { getAiRecognitionImageSource, hasPdfImportImage } from '../lib/dxfPdfBas
 import { buildGeminiDxfPdfHint } from '../lib/geminiDxfPdfHint.js'
 import { newSpaceId, newDoorId, newWindowId } from '../lib/constraints.js'
 import { attachOpeningsToSpaces, openingsToPlanDoorsWindows } from '../lib/dxfPdfDeterministicImport.js'
+import { importRoomsToSpaces } from '../lib/dxfPdfImport.js'
+import { recognizeSmallRoomDoorsVision } from '../lib/aiVisionDoors.js'
 
 /**
  * 「🏠 AI 補小房間」按鈕 — 出現在底圖控制條旁。
@@ -42,6 +44,26 @@ export default function AiRecognizeButton() {
 
   // 只用切塊 AI 重框 ≤ SMALL_MAX 坪的小房間,合併回畫布 (非破壞)。
   const SMALL_MAX = 6
+
+  function smallRoomsFromDxfPdf(maxPing = SMALL_MAX) {
+    const crop = bl.pdfImport?.crop
+    const rooms = bl.pdfImport?.preview?.rooms || []
+    if (!crop?.width || !crop?.height || !rooms.length) return []
+    const hasSmallRooms = rooms
+      .some(room => {
+        const ping = Number.isFinite(room.matchedPing) ? room.matchedPing : room.ping
+        return room.matched && Number.isFinite(ping) && ping <= maxPing && room.polygonPdf?.length >= 3
+      })
+    if (!hasSmallRooms) return []
+    return importRoomsToSpaces(rooms, crop, plan.bounds, bl.placement, bl.pdfImport?.preview?.pdfLines || [])
+      .filter(space => Number.isFinite(space.ping) && space.ping <= maxPing)
+  }
+
+  function parsePing(name) {
+    const match = String(name || '').match(/(\d+(?:\.\d+)?)\s*P/i)
+    return match ? Number(match[1]) : null
+  }
+
   async function onRunSmall() {
     if (!canTile) { setErr('小房間 AI 補框只支援 PDF / 圖片底圖'); return }
     if (!confirm([
@@ -53,17 +75,25 @@ export default function AiRecognizeButton() {
     setBusy(true); setErr('')
     let blobUrlToRevoke = null
     try {
-      const src = await resolveImageSource()
-      blobUrlToRevoke = src.blobUrlToRevoke
-      const result = await recognizePlanTiled({
-        imageUrl: src.imageUrl,
-        baseLayer: bl,
-        svgBounds: { w: plan.bounds.w, h: plan.bounds.h },
-        dxfHint: src.dxfHint,
-        keepSpace: p => p !== null && p <= SMALL_MAX,  // 只留小房間
-        onProgress: (m) => setBusyMsg(m)
-      })
-      const aiSmall = (result.spaces || []).map(s => ({
+      const dxfPdfSmall = smallRoomsFromDxfPdf()
+      let resultSpaces = dxfPdfSmall
+      const usedDxfPdfSmall = resultSpaces.length > 0
+      if (!resultSpaces.length) {
+        const src = await resolveImageSource()
+        blobUrlToRevoke = src.blobUrlToRevoke
+        const result = await recognizePlanTiled({
+          imageUrl: src.imageUrl,
+          baseLayer: bl,
+          svgBounds: { w: plan.bounds.w, h: plan.bounds.h },
+          dxfHint: src.dxfHint,
+          keepSpace: p => p !== null && p <= SMALL_MAX,  // 只留小房間
+          onProgress: (m) => setBusyMsg(m)
+        })
+        resultSpaces = result.spaces || []
+      } else {
+        setBusyMsg('套用 DXF/PDF 小房間候選…')
+      }
+      const aiSmall = resultSpaces.map(s => ({
         id: newSpaceId(), height: 280, color: '#e2e8f0', wallKind: 'interior', wallThickness: 12, ...s
       }))
       if (aiSmall.length === 0) { setErr('AI 沒框到任何小房間'); return }
@@ -83,6 +113,8 @@ export default function AiRecognizeButton() {
       }
       const aiBoxes = aiSmall.filter(s => s.vertices?.length >= 3).map(s => bbox(s.vertices))
       const kept = (latest.spaces || []).filter(s => {
+        const ping = parsePing(s.name)
+        if (ping !== null && ping <= SMALL_MAX) return false
         if (!s.vertices || s.vertices.length < 3) return true
         const sb = bbox(s.vertices)
         return !aiBoxes.some(ab => coverFrac(sb, ab) > 0.35)
@@ -91,8 +123,26 @@ export default function AiRecognizeButton() {
       const openings = bl.pdfImport?.preview?.openings
       const crop = bl.pdfImport?.crop
       let smallDoors = [], smallWindows = []
-      if (openings && crop) {
-        const att = attachOpeningsToSpaces(openings, aiSmall, crop, bl.placement, plan.bounds)
+      if (usedDxfPdfSmall && crop && bl.pdfImport?.imageHref) {
+        setBusyMsg('VisionLM 判斷小房間門洞…')
+        try {
+          smallDoors = await recognizeSmallRoomDoorsVision({
+            imageUrl: bl.pdfImport.imageHref,
+            spaces: aiSmall,
+            crop,
+            placement: bl.placement,
+            bounds: plan.bounds,
+            idFns: { door: newDoorId },
+            doorCandidates: openings?.doors || [],
+          })
+        } catch (e) {
+          console.warn('[小房間門洞 VisionLM] 失敗,略過小房間門:', e)
+        }
+      } else if (openings && crop) {
+        const att = attachOpeningsToSpaces(openings, aiSmall, crop, bl.placement, plan.bounds, {
+          doorMaxDist: 70,
+          windowMaxDist: 50,
+        })
         const o = openingsToPlanDoorsWindows(att, aiSmall, { door: newDoorId, window: newWindowId })
         smallDoors = o.doors; smallWindows = o.windows
       }
